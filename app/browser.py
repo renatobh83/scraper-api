@@ -1,6 +1,7 @@
 import asyncio
 import os
 from urllib.parse import unquote, urlsplit, urlunsplit
+from playwright_stealth import stealth_async
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
@@ -131,6 +132,7 @@ class BrowserManager:
             raise RuntimeError("BrowserManager não foi iniciado")
 
         page = await self.context.new_page()
+        await stealth_async(page)
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         return page
