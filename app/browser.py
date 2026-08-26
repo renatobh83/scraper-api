@@ -34,11 +34,9 @@ class BrowserManager:
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
-                proxy=self.proxy,
                 args=[
                     "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--no-first-run",
+                    "--no-sandbox",
                     "--no-default-browser-check",
                 ],
             )
@@ -46,9 +44,9 @@ class BrowserManager:
             self.context = await self.browser.new_context(
                 locale="pt-BR",
                 user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/121.0.0.0 Safari/537.36"
+                     "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/151.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
