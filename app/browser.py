@@ -39,18 +39,7 @@ class BrowserManager:
                     "--no-sandbox",
                     "--no-default-browser-check",
                 ],
-                extra_http_headers={
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
-                }
+            
             )
 
             self.context = await self.browser.new_context(
@@ -63,7 +52,18 @@ class BrowserManager:
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
                 java_script_enabled=True,
-                service_workers="block",
+                service_workers="block",extra_http_headers={
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+                }
             )
             await self.context.route("**/*", self._handle_route)
 
