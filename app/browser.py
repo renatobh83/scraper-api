@@ -1,12 +1,15 @@
 import asyncio
 import os
 from urllib.parse import unquote, urlsplit, urlunsplit
-from playwright_stealth import stealth_async
+
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from app.config import settings
+from playwright_stealth import Stealth  # Algumas versões usam assim
 
+# No seu código:
+stealth = Stealth()
 
 class BrowserManager:
     """Mantém uma única instância do Chromium por processo da API."""
