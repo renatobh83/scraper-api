@@ -1,5 +1,6 @@
-import os
 import asyncio
+import os
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
@@ -18,6 +19,7 @@ class BrowserManager:
         self._start_lock = asyncio.Lock()
         self.debug = os.getenv("DEBUG_BROWSER", "0") == "1"
         self.debug_pause = os.getenv("DEBUG_PAUSE", "0") == "1"
+        self.proxy = self._load_proxy()
 
     async def start(self) -> None:
         # O navegador só é criado na primeira chamada a /news.
@@ -27,20 +29,12 @@ class BrowserManager:
         async with self._start_lock:
             if self.browser is not None:
                 return
-            proxy_server = os.getenv("PROXY_SERVER")
-            proxy_config = None
 
-            if proxy_server:
-                proxy_config = {
-                    "server": proxy_server,
-                    "username": os.getenv("PROXY_USERNAME", ""),
-                    "password": os.getenv("PROXY_PASSWORD", ""),
-                }
             self._playwright = await async_playwright().start()
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
-                proxy=proxy_config,
+                proxy=self.proxy,
                 args=[
                     "--disable-dev-shm-usage",
                     "--disable-extensions",
@@ -62,6 +56,45 @@ class BrowserManager:
                 service_workers="block",
             )
             await self.context.route("**/*", self._handle_route)
+
+    @staticmethod
+    def _load_proxy() -> dict[str, str] | None:
+        """Carrega proxy sem registrar a URL nem as credenciais."""
+        proxy_url = os.getenv("PROXY_URL")
+        proxy_server = os.getenv("PROXY_SERVER")
+        proxy_username = os.getenv("PROXY_USERNAME")
+        proxy_password = os.getenv("PROXY_PASSWORD")
+
+        if proxy_url:
+            parsed = urlsplit(proxy_url)
+            if not parsed.scheme or not parsed.hostname or not parsed.port:
+                raise ValueError(
+                    "PROXY_URL deve ter o formato http://usuario:senha@host:porta"
+                )
+
+            netloc = parsed.hostname
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            proxy = {
+                "server": urlunsplit(
+                    (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+                )
+            }
+            if parsed.username:
+                proxy["username"] = unquote(parsed.username)
+            if parsed.password:
+                proxy["password"] = unquote(parsed.password)
+            return proxy
+
+        if proxy_server:
+            proxy = {"server": proxy_server}
+            if proxy_username:
+                proxy["username"] = proxy_username
+            if proxy_password:
+                proxy["password"] = proxy_password
+            return proxy
+
+        return None
 
     async def close(self) -> None:
         if self.context is not None:

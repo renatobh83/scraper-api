@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 import logging
 import os
 import re
@@ -38,6 +39,7 @@ class InvestingHeadlinesScraper(NewsScraper):
             status = response.status if response else None
             if status is not None and status >= 400:
                 title = await page.title()
+                await self._save_debug_artifacts(page, f"http_{status}")
                 logger.warning(
                     "Investing bloqueou a navegação: status=%s url=%s title=%r",
                     status,
@@ -75,6 +77,7 @@ class InvestingHeadlinesScraper(NewsScraper):
                 body_text = " ".join(
                     (await page.locator("body").inner_text()).split()
                 )[:300]
+                await self._save_debug_artifacts(page, "no_news")
                 logger.warning(
                     "Nenhuma notícia encontrada: status=%s url=%s title=%r body=%r",
                     status,
@@ -94,6 +97,34 @@ class InvestingHeadlinesScraper(NewsScraper):
             raise ScraperError(f"Falha no Playwright ao consultar Investing: {exc}") from exc
         finally:
             await page.close()
+
+    async def _save_debug_artifacts(self, page, reason: str) -> None:
+        """Salva evidências locais sem registrar credenciais nos logs."""
+        if os.getenv("SAVE_DEBUG_ARTIFACTS", "1") != "1":
+            return
+
+        directory = os.getenv("DEBUG_ARTIFACT_DIR", "/tmp/news-debug")
+        os.makedirs(directory, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        prefix = os.path.join(directory, f"investing_{stamp}_{reason}")
+
+        try:
+            await page.screenshot(path=f"{prefix}.png", full_page=True)
+            html = await page.content()
+            with open(f"{prefix}.html", "w", encoding="utf-8") as file:
+                file.write(html)
+
+            metadata = {
+                "url": page.url,
+                "title": await page.title(),
+                "reason": reason,
+            }
+            with open(f"{prefix}.json", "w", encoding="utf-8") as file:
+                json.dump(metadata, file, ensure_ascii=False, indent=2)
+
+            logger.warning("Artefatos de diagnóstico salvos em %s.*", prefix)
+        except Exception as exc:
+            logger.warning("Não foi possível salvar artefatos de diagnóstico: %s", exc)
 
     def _parse_html(self, html: str, limit: int) -> list[NewsItem]:
         soup = BeautifulSoup(html, "html.parser")

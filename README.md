@@ -116,7 +116,42 @@ O primeiro adaptador navega para `https://br.investing.com/news/headlines`, espe
 }
 ```
 
-Os seletores possuem fallbacks, mas a estrutura do site pode mudar. Se o endpoint retornar erro 502 ou zero itens, os logs agora mostram o status HTTP, a URL final, o título da página e uma amostra do texto visível para distinguir bloqueio, challenge e mudança de seletor. O ajuste deverá ser feito somente em `app/scrapers/investing.py`.
+Os seletores possuem fallbacks, mas a estrutura do site pode mudar. Se o endpoint retornar erro 502 ou zero itens, os logs agora mostram o status HTTP, a URL final, o título da página e uma amostra do texto visível para distinguir bloqueio, challenge e mudança de seletor. Além disso, são salvos screenshot, HTML e metadados em `/tmp/news-debug`.
+
+Para copiar esses arquivos para a VPS após uma falha:
+
+```bash
+mkdir -p ./debug
+
+docker cp news-scraper-api:/tmp/news-debug/. ./debug/
+ls -lh ./debug
+```
+
+## Proxy HTTP opcional
+
+O `BrowserManager` aceita um proxy HTTP autenticado. Para usar a conexão completa:
+
+```env
+PROXY_URL=http://USUARIO:SENHA@HOST:PORTA
+```
+
+Ou use as variáveis separadas, que são mais seguras quando a senha contém caracteres especiais:
+
+```env
+PROXY_SERVER=http://HOST:PORTA
+PROXY_USERNAME=USUARIO
+PROXY_PASSWORD=SENHA
+```
+
+`PROXY_URL` tem prioridade se os dois formatos forem preenchidos. Antes de testar a Investing, valide o próprio proxy com `curl`:
+
+```bash
+curl -v -x "http://USUARIO:SENHA@HOST:PORTA" https://api.ipify.org
+```
+
+O proxy deve aceitar o método `CONNECT` para destinos HTTPS. Não coloque a senha diretamente no código nem publique o arquivo `.env`.
+
+O ajuste do parser deverá ser feito somente em `app/scrapers/investing.py`.
 
 Playwright reduz o risco de bloqueio que ocorreu com uma requisição HTTP simples, mas não garante que todo bloqueio desapareça. CAPTCHA, firewall, reputação do IP, cookies, frequência de navegação e políticas da fonte ainda podem impedir o acesso. A aplicação evita reloads automáticos, limita a concorrência e não tenta contornar CAPTCHA ou outras proteções; nesses casos, devemos avaliar uma fonte oficial, RSS ou uma estratégia permitida pela fonte.
 
