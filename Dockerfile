@@ -8,7 +8,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip install playwright-stealth
 COPY app ./app
 
 # Executa o Chromium como usuário sem privilégios.
