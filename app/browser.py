@@ -1,0 +1,87 @@
+import os
+import asyncio
+
+from playwright.async_api import Browser, BrowserContext, async_playwright
+
+from app.config import settings
+
+
+class BrowserManager:
+    """Mantém uma única instância do Chromium por processo da API."""
+
+    BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+    def __init__(self) -> None:
+        self._playwright = None
+        self.browser: Browser | None = None
+        self.context: BrowserContext | None = None
+        self._start_lock = asyncio.Lock()
+        self.debug = os.getenv("DEBUG_BROWSER", "0") == "1"
+        self.debug_pause = os.getenv("DEBUG_PAUSE", "0") == "1"
+
+    async def start(self) -> None:
+        # O navegador só é criado na primeira chamada a /news.
+        if self.browser is not None:
+            return
+        async with self._start_lock:
+            if self.browser is not None:
+                return
+
+            self._playwright = await async_playwright().start()
+            self.browser = await self._playwright.chromium.launch(
+                headless=not self.debug,
+                slow_mo=150 if self.debug else 0,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                ],
+            )
+
+            self.context = await self.browser.new_context(
+                locale="pt-BR",
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/121.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 900},
+                accept_downloads=False,
+                java_script_enabled=True,
+                service_workers="block",
+            )
+            await self.context.route("**/*", self._handle_route)
+
+    async def close(self) -> None:
+        if self.context is not None:
+            await self.context.close()
+            self.context = None
+
+        if self.browser is not None:
+            await self.browser.close()
+            self.browser = None
+
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
+
+    async def _handle_route(self, route) -> None:
+        if route.request.resource_type in self.BLOCKED_RESOURCE_TYPES:
+            await route.abort(error_code="blockedbyclient")
+            return
+
+        await route.continue_()
+
+    async def new_page(self):
+        if self.context is None:
+            raise RuntimeError("BrowserManager não foi iniciado")
+
+        page = await self.context.new_page()
+        page.set_default_timeout(settings.selector_timeout_ms)
+        page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+        return page

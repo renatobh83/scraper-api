@@ -1,0 +1,18 @@
+services:
+  news-api:
+    build: .
+    container_name: news-scraper-api
+    restart: unless-stopped
+    init: true
+    ipc: host
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp_profile.json
+    tmpfs:
+      - /tmp:size=128m
+    mem_limit: 768m
+    cpus: 1.0
