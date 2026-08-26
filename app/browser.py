@@ -27,11 +27,20 @@ class BrowserManager:
         async with self._start_lock:
             if self.browser is not None:
                 return
+            proxy_server = os.getenv("PROXY_SERVER")
+            proxy_config = None
 
+            if proxy_server:
+                proxy_config = {
+                    "server": proxy_server,
+                    "username": os.getenv("PROXY_USERNAME", ""),
+                    "password": os.getenv("PROXY_PASSWORD", ""),
+                }
             self._playwright = await async_playwright().start()
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
+                proxy=proxy_config,
                 args=[
                     "--disable-dev-shm-usage",
                     "--disable-extensions",
