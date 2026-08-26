@@ -44,7 +44,7 @@ news-scraper-api/
 
 ## Executar com Docker
 
-O `Dockerfile` usa a imagem oficial do Playwright com os browsers e dependências do sistema. O pacote Python `playwright` permanece fixado na mesma versão da imagem. O container executa como `pwuser`, usa `--init`, `ipc: host` e o arquivo `seccomp_profile.json` oficial para permitir o sandbox do Chromium sem executar o navegador como root [1].
+O `Dockerfile` voltou a usar a imagem oficial do Playwright `mcr.microsoft.com/playwright/python:v1.61.0-noble`, com o pacote Python fixado na mesma versão. O container usa um único worker, `ipc: host`, usuário não-root `pwuser` e o perfil `seccomp_profile.json` versionado para o Chromium [1].
 
 Copie o arquivo de ambiente e suba o serviço:
 
@@ -96,9 +96,11 @@ DEBUG_PAUSE=0
 | Variável | Padrão | Função |
 |---|---:|---|
 | `MAX_CONCURRENT_SCRAPES` | `1` | Limita navegações Playwright simultâneas |
-| `CACHE_TTL_SECONDS` | `30` | Evita repetir a mesma consulta em curto intervalo |
+| `CACHE_TTL_SECONDS` | `120` | Evita repetir a mesma consulta em curto intervalo |
+| `BLOCKED_COOLDOWN_SECONDS` | `60` | Aguarda após um 403 antes de tentar novamente |
 | `MAX_NEWS_ITEMS` | `20` | Impede respostas excessivamente grandes |
-| `REQUEST_TIMEOUT` | `30` | Limita a navegação da fonte |
+| `NAVIGATION_TIMEOUT_MS` | `30000` | Limita a navegação da fonte |
+| `SELECTOR_TIMEOUT_MS` | `10000` | Limita a espera por elementos |
 | `DEBUG_BROWSER` | `0` | Abre ou não a janela do Chromium |
 | `DEBUG_PAUSE` | `0` | Pausa ou não a página para inspeção |
 
@@ -106,11 +108,21 @@ Não aumente os workers do Uvicorn enquanto o scraper for o núcleo da aplicaç�
 
 ## Sobre o scraper da Investing
 
-O primeiro adaptador navega para `https://br.investing.com/news/headlines`, espera o DOM dinâmico e analisa o HTML renderizado. Os seletores possuem fallbacks, mas a estrutura do site pode mudar. Se o endpoint retornar erro 502 ou zero itens, o próximo passo será capturar a estrutura real entregue à sua região/IP e ajustar somente `app/scrapers/investing.py`.
+O primeiro adaptador navega para `https://br.investing.com/news/headlines`, espera o DOM dinâmico e analisa o HTML renderizado. Para cada notícia, ele extrai os ativos relacionados a partir de `div.news-headlines-list-item.related-pairs a[href*="/equities/"]`. O texto do `span` com `title` é normalizado e retornado somente como símbolo. Por exemplo:
 
-Playwright reduz o risco de bloqueio que ocorreu com uma requisição HTTP simples, mas não garante que todo bloqueio desapareça. CAPTCHA, firewall, reputação do IP, cookies e políticas da fonte ainda podem impedir o acesso. A aplicação não tenta contornar CAPTCHA; nesses casos, devemos avaliar uma fonte oficial, RSS ou uma estratégia permitida pela fonte.
+```json
+{
+  "symbols": ["LMT", "LCO"]
+}
+```
+
+Os seletores possuem fallbacks, mas a estrutura do site pode mudar. Se o endpoint retornar erro 502 ou zero itens, os logs agora mostram o status HTTP, a URL final, o título da página e uma amostra do texto visível para distinguir bloqueio, challenge e mudança de seletor. O ajuste deverá ser feito somente em `app/scrapers/investing.py`.
+
+Playwright reduz o risco de bloqueio que ocorreu com uma requisição HTTP simples, mas não garante que todo bloqueio desapareça. CAPTCHA, firewall, reputação do IP, cookies, frequência de navegação e políticas da fonte ainda podem impedir o acesso. A aplicação evita reloads automáticos, limita a concorrência e não tenta contornar CAPTCHA ou outras proteções; nesses casos, devemos avaliar uma fonte oficial, RSS ou uma estratégia permitida pela fonte.
 
 ## Próximas evoluções
+
+A API usa cache por 120 segundos por padrão. Assim, recarregar o endpoint não navega novamente na Investing durante esse intervalo. Use `GET /news?refresh=true` somente quando quiser forçar uma consulta nova. Se uma consulta posterior for bloqueada, a API devolve o último resultado válido com `stale: true`, quando existir, em vez de perder imediatamente os dados já coletados. Após um 403, o serviço aguarda 60 segundos antes de uma nova tentativa para não intensificar o bloqueio.
 
 A ordem recomendada é validar `/health`, testar `/news`, confirmar os seletores da fonte e só depois adicionar persistência. O cache atual é apenas em memória e serve para o esboço. Quando houver agendamento, retries, várias fontes ou tarefas demoradas, será melhor separar API e worker e colocar o estado em Redis ou banco.
 

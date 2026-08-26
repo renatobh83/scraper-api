@@ -23,6 +23,7 @@ class BrowserManager:
         # O navegador só é criado na primeira chamada a /news.
         if self.browser is not None:
             return
+
         async with self._start_lock:
             if self.browser is not None:
                 return
@@ -32,14 +33,10 @@ class BrowserManager:
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
                 args=[
-                    "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-extensions",
                     "--no-first-run",
                     "--no-default-browser-check",
-                    "--disable-background-networking",
-                    "--disable-background-timer-throttling",
-                    "--disable-renderer-backgrounding",
                 ],
             )
 

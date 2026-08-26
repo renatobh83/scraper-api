@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 import os
 import re
 from urllib.parse import urljoin
@@ -9,6 +10,9 @@ from playwright.async_api import BrowserContext, Error as PlaywrightError
 from app.config import settings
 from app.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
+
+
+logger = logging.getLogger(__name__)
 
 
 class InvestingHeadlinesScraper(NewsScraper):
@@ -33,8 +37,16 @@ class InvestingHeadlinesScraper(NewsScraper):
 
             status = response.status if response else None
             if status is not None and status >= 400:
+                title = await page.title()
+                logger.warning(
+                    "Investing bloqueou a navegação: status=%s url=%s title=%r",
+                    status,
+                    page.url,
+                    title,
+                )
                 raise ScraperError(
-                    f"Investing respondeu HTTP {status} mesmo com Playwright."
+                    f"Investing respondeu HTTP {status} mesmo com Playwright "
+                    f"(url={page.url}, title={title!r})."
                 )
 
             # O seletor final pode ser ajustado após inspecionar a estrutura real
@@ -58,13 +70,28 @@ class InvestingHeadlinesScraper(NewsScraper):
                 await page.pause()
 
             html = await page.content()
-            return self._parse_html(html, limit)
+            items = self._parse_html(html, limit)
+            if not items:
+                body_text = " ".join(
+                    (await page.locator("body").inner_text()).split()
+                )[:300]
+                logger.warning(
+                    "Nenhuma notícia encontrada: status=%s url=%s title=%r body=%r",
+                    status,
+                    page.url,
+                    await page.title(),
+                    body_text,
+                )
+                raise ScraperError(
+                    "Nenhuma notícia encontrada no HTML renderizado da Investing. "
+                    "Verifique os logs do container para o diagnóstico."
+                )
+
+            return items
         except ScraperError:
             raise
         except PlaywrightError as exc:
-            raise ScraperError(
-                f"Falha no Playwright ao consultar Investing: {exc}"
-            ) from exc
+            raise ScraperError(f"Falha no Playwright ao consultar Investing: {exc}") from exc
         finally:
             await page.close()
 
@@ -79,7 +106,9 @@ class InvestingHeadlinesScraper(NewsScraper):
         #     a[href="/news/..."]
         breaking_news = soup.select_one('div[data-test="breaking-news"]')
         if breaking_news:
-            cards = breaking_news.select('div[data-test="breaking-news-article"]')
+            cards = breaking_news.select(
+                'div[data-test="breaking-news-article"]'
+            )
         else:
             # Fallback para versões/layouts diferentes da página.
             cards = soup.select(
@@ -91,7 +120,8 @@ class InvestingHeadlinesScraper(NewsScraper):
             # No layout atual, o título está no primeiro link de notícia
             # dentro de cada breaking-news-article.
             anchor = card.select_one(
-                'a[href*="/news/"], a[data-test="article-title"], ' "h2 a, h3 a"
+                'a[href*="/news/"], a[data-test="article-title"], '
+                'h2 a, h3 a'
             )
             if not anchor:
                 continue
@@ -146,7 +176,8 @@ class InvestingHeadlinesScraper(NewsScraper):
         )
 
         related_links = card.select(
-            "div.news-headlines-list-item.related-pairs " + asset_href_selector
+            'div.news-headlines-list-item.related-pairs '
+            + asset_href_selector
         )
         if not related_links:
             # Fallback caso as classes utilitárias mudem, mas o bloco
@@ -193,7 +224,9 @@ class InvestingHeadlinesScraper(NewsScraper):
 
     @staticmethod
     def _parse_datetime(card) -> datetime | None:
-        element = card.select_one("time[datetime], [data-test='article-publish-date']")
+        element = card.select_one(
+            "time[datetime], [data-test='article-publish-date']"
+        )
         if not element:
             return None
 
