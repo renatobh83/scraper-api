@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 import os
 
+from dotenv import load_dotenv
+
+# Load the .env file
+load_dotenv()
+
 
 @dataclass(frozen=True)
 class Settings:

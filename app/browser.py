@@ -5,15 +5,22 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from app.config import settings
-from playwright_stealth import Stealth  # Algumas versões usam assim
 
-# No seu código:
-stealth = Stealth()
 
 class BrowserManager:
     """Mantém uma única instância do Chromium por processo da API."""
 
     BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+    BLOCKED_GOOGLE_DOMAINS = {
+        "google.com",
+        "google.com.br",
+        "googleapis.com",
+        "gstatic.com",
+        "googleusercontent.com",
+        "google-analytics.com",
+        "doubleclick.net",
+        "googlesyndication.com",
+    }
 
     def __init__(self) -> None:
         self._playwright = None
@@ -23,6 +30,7 @@ class BrowserManager:
         self.debug = os.getenv("DEBUG_BROWSER", "0") == "1"
         self.debug_pause = os.getenv("DEBUG_PAUSE", "0") == "1"
         self.proxy = self._load_proxy()
+        self.block_google = os.getenv("BLOCK_GOOGLE", "1") == "1"
 
     async def start(self) -> None:
         # O navegador só é criado na primeira chamada a /news.
@@ -36,38 +44,27 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
-                proxy=self.proxy,
                 slow_mo=150 if self.debug else 0,
+                proxy=self.proxy,
                 args=[
                     "--disable-dev-shm-usage",
-                    "--no-sandbox",
+                    "--disable-extensions",
+                    "--no-first-run",
                     "--no-default-browser-check",
                 ],
-            
             )
 
             self.context = await self.browser.new_context(
                 locale="pt-BR",
                 user_agent=(
-                     "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/151.0.0.0 Safari/537.36"
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/121.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
                 java_script_enabled=True,
-                service_workers="block",extra_http_headers={
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
-                }
+                service_workers="block",
             )
             await self.context.route("**/*", self._handle_route)
 
@@ -124,18 +121,35 @@ class BrowserManager:
             self._playwright = None
 
     async def _handle_route(self, route) -> None:
+        request_url = route.request.url
+        hostname = urlsplit(request_url).hostname
+
+        if self.block_google and self._is_blocked_google_host(hostname):
+            await route.abort(error_code="blockedbyclient")
+            return
+
         if route.request.resource_type in self.BLOCKED_RESOURCE_TYPES:
             await route.abort(error_code="blockedbyclient")
             return
 
         await route.continue_()
 
+    @classmethod
+    def _is_blocked_google_host(cls, hostname: str | None) -> bool:
+        if not hostname:
+            return False
+
+        hostname = hostname.lower().rstrip(".")
+        return any(
+            hostname == domain or hostname.endswith(f".{domain}")
+            for domain in cls.BLOCKED_GOOGLE_DOMAINS
+        )
+
     async def new_page(self):
         if self.context is None:
             raise RuntimeError("BrowserManager não foi iniciado")
 
         page = await self.context.new_page()
-        await stealth_async(page)
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         return page
