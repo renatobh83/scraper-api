@@ -2,7 +2,6 @@ import asyncio
 import os
 from urllib.parse import unquote, urlsplit, urlunsplit
 
-
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from app.config import settings
@@ -37,6 +36,7 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
+                proxy=self.proxy,
                 slow_mo=150 if self.debug else 0,
                 args=[
                     "--disable-dev-shm-usage",

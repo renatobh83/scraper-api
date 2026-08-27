@@ -9,6 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install playwright-stealth
+RUN pip install tor-proxy
 COPY app ./app
 
 # Executa o Chromium como usuário sem privilégios.
