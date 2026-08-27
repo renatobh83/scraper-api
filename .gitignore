@@ -1,3 +1,6 @@
 venv
 .env
 .dockerignore
+*.pyc
+app/__pycache__
+tmp
