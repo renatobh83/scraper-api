@@ -47,28 +47,39 @@ class InvestingHeadlinesScraper(NewsScraper):
             pass
 
         try:
-            page.on(
-                "request",
-                lambda request: print(
-                    "REQ:",
-                    request.method,
-                    request.url[:200],
-                ),
-            )
+            # page.on(
+            #     "request",
+            #     lambda request: print(
+            #         "REQ:",
+            #         request.method,
+            #         request.url[:200],
+            #     ),
+            # )
 
-            page.on(
-                "response",
-                lambda response: print(
-                    "RESP:",
-                    response.status,
-                    response.url[:200],
-                ),
-            )
+            # page.on(
+            #     "response",
+            #     lambda response: print(
+            #         "RESP:",
+            #         response.status,
+            #         response.url[:200],
+            #     ),
+            # )
             response = await page.goto(
                 self.page_url,
                 wait_until="commit",
                 timeout=15000,
             )
+            print(await page.evaluate("""
+    () => ({
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        language: navigator.language,
+        languages: navigator.languages,
+        webdriver: navigator.webdriver,
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: navigator.deviceMemory
+    })
+"""))
             await jitter(1.0, 2.5)
 
             await human_scroll(
