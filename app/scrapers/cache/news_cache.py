@@ -1,8 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Awaitable
-from app.models import NewsItem, NewsResponse
+from app.models import NewsResponse
 
 logger = logging.getLogger(__name__)
 
@@ -14,61 +13,108 @@ async def refresh_news_cache(
     cache: dict,
     scrape_semaphore,
     cache_limit: int,
+    max_retries: int = 3,
+    retry_delay: int = 30,
 ):
     """
-    Consulta a fonte e atualiza o cache.
+    Atualiza o cache da fonte.
 
-    Esta função não conhece o FastAPI nem importa app.main.
+    Em caso de 403, 407 ou timeout, aguarda `retry_delay`
+    segundos e tenta novamente.
     """
 
     async with scrape_semaphore:
 
-        try:
-            logger.info(
-                "Iniciando atualização do cache: source=%s",
-                source_key,
-            )
+        for attempt in range(1, max_retries + 1):
 
-            await browser_manager.start()
+            try:
 
-            if browser_manager.context is None:
-                raise RuntimeError("Contexto Playwright não foi criado")
-
-            items = await scraper.scrape(
-                browser_manager.context,
-                cache_limit,
-            )
-
-            if not items:
-                logger.warning(
-                    "Nenhuma notícia retornada para %s",
+                logger.info(
+                    "[NEWS] Atualização %s - tentativa %s/%s",
                     source_key,
+                    attempt,
+                    max_retries,
                 )
+
+                await browser_manager.start()
+
+                if browser_manager.context is None:
+                    raise RuntimeError("Contexto Playwright não foi criado")
+
+                items = await scraper.scrape(
+                    browser_manager.context,
+                    cache_limit,
+                )
+
+                if not items:
+                    logger.warning(
+                        "[NEWS] Nenhuma notícia retornada: %s",
+                        source_key,
+                    )
+                    return
+
+                result = NewsResponse(
+                    source=scraper.source_name,
+                    fetched_at=datetime.now(timezone.utc),
+                    count=len(items),
+                    items=list(items),
+                )
+
+                cache[source_key] = (
+                    asyncio.get_running_loop().time(),
+                    result,
+                )
+
+                logger.info(
+                    "[NEWS] Cache atualizado: source=%s items=%s",
+                    source_key,
+                    len(items),
+                )
+
                 return
 
-            result = NewsResponse(
-                source=scraper.source_name,
-                fetched_at=datetime.now(timezone.utc),
-                count=len(items),
-                items=list(items),
-            )
+            except Exception as exc:
 
-            cache[source_key] = (
-                asyncio.get_running_loop().time(),
-                result,
-            )
+                error_text = str(exc)
 
-            logger.info(
-                "Cache atualizado: source=%s items=%s",
-                source_key,
-                len(items),
-            )
+                is_retryable = (
+                    "HTTP 403" in error_text
+                    or "HTTP 407" in error_text
+                    or "Timeout" in error_text
+                    or "timeout" in error_text
+                )
 
-        except Exception:
-            logger.exception(
-                "Erro atualizando cache da fonte %s",
-                source_key,
-            )
+                if not is_retryable:
+                    logger.exception(
+                        "[NEWS] Erro não recuperável: %s",
+                        source_key,
+                    )
+                    return
+
+                logger.warning(
+                    "[NEWS] Falha temporária: source=%s " "tentativa=%s/%s erro=%s",
+                    source_key,
+                    attempt,
+                    max_retries,
+                    error_text,
+                )
+
+                if attempt >= max_retries:
+                    logger.error(
+                        "[NEWS] Todas as tentativas falharam: " "source=%s",
+                        source_key,
+                    )
+
+                    # Não apagamos o cache anterior.
+                    # O último resultado válido continua disponível.
+                    return
+
+                logger.info(
+                    "[NEWS] Aguardando %ss antes da próxima tentativa...",
+                    retry_delay,
+                )
+
+                await asyncio.sleep(retry_delay)
 
 
 async def news_cache_scheduler(
