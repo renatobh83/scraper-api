@@ -457,6 +457,8 @@ async def teste():
         raise
     except ScraperError as exc:
         raise
+    finally:
+        await page.close()
 
 
 # ============================================================
