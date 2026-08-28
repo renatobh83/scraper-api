@@ -46,7 +46,7 @@ class BrowserManager:
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
-                proxy=self.proxy,
+                # proxy=self.proxy,
                 args=[
                     "--disable-dev-shm-usage",
                     "--disable-extensions",
