@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from datetime import datetime, timezone
+
+from playwright.sync_api import ConsoleMessage
 from app.browser import BrowserManager
 from app.config import settings
 from app.models import HealthResponse, NewsResponse
@@ -118,7 +120,6 @@ async def news(
         )
 
     cache_key = (source_key, limit)
-    now = asyncio.get_running_loop().time()
     cached = cache.get(cache_key)
 
     # ---------------------------------------------------------
@@ -139,7 +140,7 @@ async def news(
             limit,
         )
 
-        return cached
+        return cached[1]
 
     async with scrape_semaphore:
 
@@ -151,7 +152,7 @@ async def news(
         cached = cache.get(cache_key)
 
         if cached is not None:
-
+            print(cached)
             return cached[1]
 
         # -----------------------------------------------------
@@ -192,7 +193,8 @@ async def news(
             cached = news_cache.get(cache_key)
 
             if cached is not None:
-                return cached[1].model_copy(update={"stale": True})
+                print(cached)
+                return cached[1]
 
             raise HTTPException(
                 status_code=503,
@@ -213,8 +215,8 @@ async def news(
             cached = news_cache.get(cache_key)
 
             if cached is not None:
-
-                return cached[1].model_copy(update={"stale": True})
+                print(cached)
+                return cached[1]
 
             raise HTTPException(
                 status_code=503,

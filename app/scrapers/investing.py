@@ -76,16 +76,6 @@ class InvestingHeadlinesScraper(NewsScraper):
             )
             print("STATUS:", response.status if response else None)
             print("URL:", page.url)
-            if response:
-                print("HEADERS:", await response.all_headers())
-
-                try:
-                    body = await response.body()
-                    print(
-                        "RESPONSE BODY:", body.decode("utf-8", errors="ignore")[:5000]
-                    )
-                except Exception as exc:
-                    print("Erro lendo response body:", exc)
             print("TITLE:", await page.title())
             status = response.status if response else None
             if status is not None and status >= 400:
@@ -129,13 +119,7 @@ class InvestingHeadlinesScraper(NewsScraper):
                     :300
                 ]
                 # await self._save_debug_artifacts(page, "no_news")
-                logger.warning(
-                    "Nenhuma notícia encontrada: status=%s url=%s title=%r body=%r",
-                    status,
-                    page.url,
-                    await page.title(),
-                    body_text,
-                )
+
                 raise ScraperError(
                     "Nenhuma notícia encontrada no HTML renderizado da Investing. "
                     "Verifique os logs do container para o diagnóstico."
