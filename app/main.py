@@ -435,6 +435,7 @@ def start_background_refresh(
 
 @app.get("/teste")
 async def teste():
+    page = None
     try:
         await browser_manager.start()
 
@@ -458,7 +459,8 @@ async def teste():
     except ScraperError as exc:
         raise
     finally:
-        await page.close()
+        if page:
+            await page.close()
 
 
 # ============================================================
