@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
-
+from datetime import datetime, timezone
 from app.browser import BrowserManager
 from app.config import settings
 from app.models import HealthResponse, NewsResponse
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
-
+cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
 browser_manager = BrowserManager()
-
+blocked_until: dict[tuple[str, int], float] = {}
 
 # ============================================================
 # LIFESPAN
@@ -118,18 +118,20 @@ async def news(
         )
 
     cache_key = (source_key, limit)
+    now = asyncio.get_running_loop().time()
+    cached = cache.get(cache_key)
 
     # ---------------------------------------------------------
     # 1. CONSULTA CACHE
     # ---------------------------------------------------------
 
-    cached, is_fresh = news_cache.get(cache_key)
+    # cached, is_fresh = news_cache.get(cache_key)
 
     # ---------------------------------------------------------
     # CACHE FRESCO
     # ---------------------------------------------------------
 
-    if cached is not None and is_fresh:
+    if cached:
 
         logger.info(
             "[NEWS] Cache HIT: source=%s limit=%s",
@@ -139,62 +141,6 @@ async def news(
 
         return cached
 
-    # ---------------------------------------------------------
-    # CACHE STALE
-    # ---------------------------------------------------------
-
-    if cached is not None:
-
-        logger.info(
-            "[NEWS] Cache STALE: source=%s limit=%s",
-            source_key,
-            limit,
-        )
-
-        try:
-
-            await browser_manager.start()
-
-            if browser_manager.context is not None:
-
-                news_cache.start_background_refresh(
-                    key=cache_key,
-                    scraper=scraper,
-                    context=browser_manager.context,
-                    limit=limit,
-                )
-
-        except Exception:
-
-            logger.exception(
-                "[NEWS] Não foi possível iniciar " "refresh em background: source=%s",
-                source_key,
-            )
-
-        # -----------------------------------------------------
-        # IMPORTANTE:
-        #
-        # Não espera o Investing.
-        #
-        # Retorna imediatamente o cache antigo.
-        # -----------------------------------------------------
-
-        return cached
-
-    # ---------------------------------------------------------
-    # 2. CACHE MISS
-    #
-    # Não temos nenhum resultado armazenado.
-    #
-    # Nesse caso precisamos consultar a fonte.
-    # ---------------------------------------------------------
-
-    logger.info(
-        "[NEWS] Cache MISS: source=%s limit=%s",
-        source_key,
-        limit,
-    )
-
     async with scrape_semaphore:
 
         # -----------------------------------------------------
@@ -202,11 +148,11 @@ async def news(
         # esta aguardava o semaphore.
         # -----------------------------------------------------
 
-        cached, is_fresh = news_cache.get(cache_key)
+        cached = cache.get(cache_key)
 
         if cached is not None:
 
-            return cached
+            return cached[1]
 
         # -----------------------------------------------------
         # Inicializa browser
@@ -226,28 +172,7 @@ async def news(
             # Aqui esperamos porque ainda não existe cache.
             # -------------------------------------------------
 
-            result = await news_cache.refresh(
-                key=cache_key,
-                scraper=scraper,
-                context=browser_manager.context,
-                limit=limit,
-            )
-
-            # -------------------------------------------------
-            # Se falhou e não existe cache
-            # -------------------------------------------------
-
-            if result is None:
-
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Não foi possível obter notícias "
-                        "e não existe cache disponível."
-                    ),
-                )
-
-            return result
+            items = await scraper.scrape(browser_manager.context, limit)
 
         except HTTPException:
 
@@ -264,11 +189,10 @@ async def news(
             # Última tentativa de devolver cache.
             # -------------------------------------------------
 
-            cached, _ = news_cache.get(cache_key)
+            cached = news_cache.get(cache_key)
 
             if cached is not None:
-
-                return cached
+                return cached[1].model_copy(update={"stale": True})
 
             raise HTTPException(
                 status_code=503,
@@ -286,16 +210,27 @@ async def news(
             # Se existir cache, não derruba a API.
             # -------------------------------------------------
 
-            cached, _ = news_cache.get(cache_key)
+            cached = news_cache.get(cache_key)
 
             if cached is not None:
 
-                return cached
+                return cached[1].model_copy(update={"stale": True})
 
             raise HTTPException(
                 status_code=503,
                 detail=str(exc),
             ) from exc
+        if items is None:
+            return None
+        result = NewsResponse(
+            source=scraper.source_name,
+            fetched_at=datetime.now(timezone.utc),
+            count=len(items),
+            items=list(items),
+        )
+        blocked_until.pop(cache_key, None)
+        cache[cache_key] = (asyncio.get_running_loop().time(), result)
+        return result
 
 
 # ============================================================

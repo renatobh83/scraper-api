@@ -72,11 +72,11 @@ class BrowserManager:
                 java_script_enabled=True,
                 service_workers="block",
             )
-            # await self.context.add_init_script("""
-            #     Object.defineProperty(navigator, 'webdriver', {
-            #         get: () => undefined
-            #     });
-            #     """)
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                """)
             await self.context.route("**/*", self._handle_route)
 
     @staticmethod
