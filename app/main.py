@@ -20,12 +20,16 @@ logger = logging.getLogger(__name__)
 
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
 
-# (timestamp, NewsResponse)
+# Cache simples:
+# {
+#     ("investing", 10): (
+#         timestamp,
+#         NewsResponse(...)
+#     )
+# }
 cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
 
 browser_manager = BrowserManager()
-
-blocked_until: dict[tuple[str, int], float] = {}
 
 
 # ============================================================
@@ -42,6 +46,7 @@ async def lifespan(app: FastAPI):
         yield
 
     finally:
+
         logger.info("[APP] Encerrando aplicação")
 
         await browser_manager.close()
@@ -56,7 +61,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API para coleta de notícias com Playwright e cache.",
+    description=("API para coleta de notícias com Playwright."),
     lifespan=lifespan,
 )
 
@@ -102,6 +107,10 @@ async def news(
 
     source_key = source.lower()
 
+    # ---------------------------------------------------------
+    # Verifica se a fonte existe
+    # ---------------------------------------------------------
+
     scraper = SCRAPERS.get(source_key)
 
     if scraper is None:
@@ -116,100 +125,58 @@ async def news(
 
     cache_key = (source_key, limit)
 
-    # ========================================================
-    # VERIFICA CACHE
-    # ========================================================
-
-    now = asyncio.get_running_loop().time()
+    # ---------------------------------------------------------
+    # 1. CACHE
+    # ---------------------------------------------------------
 
     cached = cache.get(cache_key)
 
     if cached is not None:
 
-        cached_time, cached_result = cached
-
-        age = now - cached_time
-
-        # Cache ainda válido
-        if age < settings.cache_ttl_seconds:
-
-            logger.info(
-                "[NEWS] Cache HIT: source=%s limit=%s age=%.1fs",
-                source_key,
-                limit,
-                age,
-            )
-
-            return cached_result
+        cached_timestamp, cached_response = cached
 
         logger.info(
-            "[NEWS] Cache expirado: source=%s limit=%s age=%.1fs",
+            "[NEWS] Cache HIT: source=%s limit=%s",
             source_key,
             limit,
-            age,
         )
 
-    # ========================================================
-    # VERIFICA COOLDOWN
-    # ========================================================
+        return cached_response
 
-    cooldown_end = blocked_until.get(
-        cache_key,
-        0.0,
+    # ---------------------------------------------------------
+    # 2. NÃO EXISTE CACHE
+    # ---------------------------------------------------------
+
+    logger.info(
+        "[NEWS] Cache MISS: source=%s limit=%s",
+        source_key,
+        limit,
     )
-
-    now = asyncio.get_running_loop().time()
-
-    if now < cooldown_end:
-
-        # Se temos cache antigo, devolvemos ele
-        if cached is not None:
-
-            logger.warning(
-                "[NEWS] Fonte em cooldown. " "Retornando cache antigo: source=%s",
-                source_key,
-            )
-
-            return cached[1].model_copy(update={"stale": True})
-
-        raise HTTPException(
-            status_code=429,
-            detail=("A fonte bloqueou temporariamente " "novas consultas."),
-            headers={"Retry-After": str(int(cooldown_end - now) + 1)},
-        )
-
-    # ========================================================
-    # UMA CONSULTA POR VEZ
-    # ========================================================
 
     async with scrape_semaphore:
 
-        # Outra requisição pode ter atualizado o cache
-        # enquanto estávamos esperando o semaphore.
-
-        now = asyncio.get_running_loop().time()
+        # -----------------------------------------------------
+        # Outra requisição pode ter preenchido o cache
+        # enquanto esta aguardava o semaphore.
+        # -----------------------------------------------------
 
         cached = cache.get(cache_key)
 
         if cached is not None:
 
-            cached_time, cached_result = cached
+            cached_timestamp, cached_response = cached
 
-            age = now - cached_time
+            logger.info(
+                "[NEWS] Cache preenchido enquanto aguardava: " "source=%s limit=%s",
+                source_key,
+                limit,
+            )
 
-            if age < settings.cache_ttl_seconds:
+            return cached_response
 
-                logger.info(
-                    "[NEWS] Cache preenchido enquanto aguardava "
-                    "semaphore: source=%s",
-                    source_key,
-                )
-
-                return cached_result
-
-        # ====================================================
-        # INICIA BROWSER
-        # ====================================================
+        # -----------------------------------------------------
+        # 3. INICIA PLAYWRIGHT
+        # -----------------------------------------------------
 
         try:
 
@@ -219,9 +186,14 @@ async def news(
 
                 raise ScraperError("Contexto Playwright não foi criado")
 
+            # -------------------------------------------------
+            # 4. SCRAPE
+            # -------------------------------------------------
+
             logger.info(
-                "[NEWS] Consultando fonte: %s",
+                "[NEWS] Fazendo scrape: source=%s limit=%s",
                 source_key,
+                limit,
             )
 
             items = await scraper.scrape(
@@ -236,22 +208,20 @@ async def news(
                 source_key,
             )
 
-            # Se temos cache, preservamos o último resultado
+            # -------------------------------------------------
+            # Se por algum motivo existir cache, devolve ele.
+            # -------------------------------------------------
+
             cached = cache.get(cache_key)
 
             if cached is not None:
 
-                logger.warning("[NEWS] Retornando cache antigo após erro")
-
-                return cached[1].model_copy(update={"stale": True})
-
-            # Se foi 403, ativa cooldown
-            if "HTTP 403" in str(exc):
-
-                blocked_until[cache_key] = (
-                    asyncio.get_running_loop().time()
-                    + settings.blocked_cooldown_seconds
+                logger.warning(
+                    "[NEWS] Scrape falhou, devolvendo cache: " "source=%s",
+                    source_key,
                 )
+
+                return cached[1]
 
             raise HTTPException(
                 status_code=503,
@@ -261,7 +231,7 @@ async def news(
         except Exception as exc:
 
             logger.exception(
-                "[NEWS] Erro inesperado: source=%s",
+                "[NEWS] Erro inesperado source=%s",
                 source_key,
             )
 
@@ -269,16 +239,27 @@ async def news(
 
             if cached is not None:
 
-                return cached[1].model_copy(update={"stale": True})
+                return cached[1]
 
             raise HTTPException(
                 status_code=503,
                 detail=str(exc),
             ) from exc
 
-        # ====================================================
-        # SALVA CACHE
-        # ====================================================
+        # -----------------------------------------------------
+        # 5. VALIDA RESULTADO
+        # -----------------------------------------------------
+
+        if items is None:
+
+            raise HTTPException(
+                status_code=503,
+                detail=("O scraper não retornou nenhuma notícia."),
+            )
+
+        # -----------------------------------------------------
+        # 6. MONTA RESPONSE
+        # -----------------------------------------------------
 
         result = NewsResponse(
             source=scraper.source_name,
@@ -288,21 +269,25 @@ async def news(
             items=list(items),
         )
 
+        # -----------------------------------------------------
+        # 7. SALVA CACHE
+        # -----------------------------------------------------
+
         cache[cache_key] = (
             asyncio.get_running_loop().time(),
             result,
         )
 
-        blocked_until.pop(
-            cache_key,
-            None,
-        )
-
         logger.info(
-            "[NEWS] Cache atualizado: source=%s limit=%s",
+            "[NEWS] Cache atualizado: source=%s limit=%s " "items=%s",
             source_key,
             limit,
+            len(items),
         )
+
+        # -----------------------------------------------------
+        # 8. RETORNA
+        # -----------------------------------------------------
 
         return result
 
@@ -315,4 +300,6 @@ async def news(
 @app.get("/sources")
 async def sources() -> dict[str, list[str]]:
 
-    return {"sources": sorted(SCRAPERS)}
+    return {
+        "sources": sorted(SCRAPERS),
+    }
