@@ -309,7 +309,8 @@ async def news(
                         source_key,
                         limit,
                     )
-
+                if cached:
+                    return cached[1].model_copy(update={"stale": True})
                 # ---------------------------------------------------------
                 # Não espera o retry.
                 # Responde imediatamente ao usuário.
