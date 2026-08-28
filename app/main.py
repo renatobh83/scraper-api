@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
@@ -8,62 +9,83 @@ from app.config import settings
 from app.models import HealthResponse, NewsResponse
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
-from app.scrapers.cache.news_cache import (
-    news_cache_scheduler,
-)
+from app.scrapers.cache.news_cache import news_cache
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# RECURSOS GLOBAIS
+# ============================================================
 
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
-cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
-cache_refresh_tasks: dict[tuple, asyncio.Task] = {}
-blocked_until: dict[tuple[str, int], float] = {}
+
 browser_manager = BrowserManager()
 
 
-news_scheduler_task = None
+# ============================================================
+# LIFESPAN
+# ============================================================
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global news_scheduler_task
 
-    news_scheduler_task = asyncio.create_task(
-        news_cache_scheduler(
-            scrapers=SCRAPERS,
-            browser_manager=browser_manager,
-            cache=cache,
-            scrape_semaphore=scrape_semaphore,
-            cache_limit=settings.news_cache_limit,
-            interval=settings.cache_ttl_seconds,
-        )
-    )
+    logger.info("[APP] Iniciando aplicação")
 
     try:
         yield
+
     finally:
-        if news_scheduler_task is not None:
-            news_scheduler_task.cancel()
-            try:
-                await news_scheduler_task
-            except asyncio.CancelledError:
-                pass
+        logger.info("[APP] Encerrando aplicação")
+
+        await news_cache.clear()
 
         await browser_manager.close()
 
+        logger.info("[APP] Aplicação encerrada")
+
+
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API inicial para coleta de notícias com Playwright.",
+    description=(
+        "API para coleta de notícias com Playwright " "e cache stale-while-revalidate."
+    ),
     lifespan=lifespan,
 )
 
 
-@app.get("/health", response_model=HealthResponse)
+# ============================================================
+# HEALTH
+# ============================================================
+
+
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+)
 async def health() -> HealthResponse:
-    return HealthResponse(status="ok", version=settings.app_version)
+
+    return HealthResponse(
+        status="ok",
+        version=settings.app_version,
+    )
 
 
-@app.get("/news", response_model=NewsResponse)
+# ============================================================
+# NEWS
+# ============================================================
+
+
+@app.get(
+    "/news",
+    response_model=NewsResponse,
+)
 async def news(
     source: str = Query(
         "investing",
@@ -79,9 +101,14 @@ async def news(
 
     source_key = source.lower()
 
+    # ---------------------------------------------------------
+    # Verifica se a fonte existe
+    # ---------------------------------------------------------
+
     scraper = SCRAPERS.get(source_key)
 
     if scraper is None:
+
         raise HTTPException(
             status_code=404,
             detail={
@@ -90,24 +117,195 @@ async def news(
             },
         )
 
-    cached = cache.get(source_key)
+    cache_key = (source_key, limit)
 
-    if cached is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Cache ainda não foi carregado.",
+    # ---------------------------------------------------------
+    # 1. CONSULTA CACHE
+    # ---------------------------------------------------------
+
+    cached, is_fresh = news_cache.get(cache_key)
+
+    # ---------------------------------------------------------
+    # CACHE FRESCO
+    # ---------------------------------------------------------
+
+    if cached is not None and is_fresh:
+
+        logger.info(
+            "[NEWS] Cache HIT: source=%s limit=%s",
+            source_key,
+            limit,
         )
 
-    result = cached[1]
+        return cached
 
-    return result.model_copy(
-        update={
-            "items": result.items[:limit],
-            "count": min(limit, len(result.items)),
-        }
+    # ---------------------------------------------------------
+    # CACHE STALE
+    # ---------------------------------------------------------
+
+    if cached is not None:
+
+        logger.info(
+            "[NEWS] Cache STALE: source=%s limit=%s",
+            source_key,
+            limit,
+        )
+
+        try:
+
+            await browser_manager.start()
+
+            if browser_manager.context is not None:
+
+                news_cache.start_background_refresh(
+                    key=cache_key,
+                    scraper=scraper,
+                    context=browser_manager.context,
+                    limit=limit,
+                )
+
+        except Exception:
+
+            logger.exception(
+                "[NEWS] Não foi possível iniciar " "refresh em background: source=%s",
+                source_key,
+            )
+
+        # -----------------------------------------------------
+        # IMPORTANTE:
+        #
+        # Não espera o Investing.
+        #
+        # Retorna imediatamente o cache antigo.
+        # -----------------------------------------------------
+
+        return cached
+
+    # ---------------------------------------------------------
+    # 2. CACHE MISS
+    #
+    # Não temos nenhum resultado armazenado.
+    #
+    # Nesse caso precisamos consultar a fonte.
+    # ---------------------------------------------------------
+
+    logger.info(
+        "[NEWS] Cache MISS: source=%s limit=%s",
+        source_key,
+        limit,
     )
+
+    async with scrape_semaphore:
+
+        # -----------------------------------------------------
+        # Outra requisição pode ter preenchido o cache enquanto
+        # esta aguardava o semaphore.
+        # -----------------------------------------------------
+
+        cached, is_fresh = news_cache.get(cache_key)
+
+        if cached is not None:
+
+            return cached
+
+        # -----------------------------------------------------
+        # Inicializa browser
+        # -----------------------------------------------------
+
+        try:
+
+            await browser_manager.start()
+
+            if browser_manager.context is None:
+
+                raise ScraperError("Contexto Playwright não foi criado")
+
+            # -------------------------------------------------
+            # Primeira consulta.
+            #
+            # Aqui esperamos porque ainda não existe cache.
+            # -------------------------------------------------
+
+            result = await news_cache.refresh(
+                key=cache_key,
+                scraper=scraper,
+                context=browser_manager.context,
+                limit=limit,
+            )
+
+            # -------------------------------------------------
+            # Se falhou e não existe cache
+            # -------------------------------------------------
+
+            if result is None:
+
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Não foi possível obter notícias "
+                        "e não existe cache disponível."
+                    ),
+                )
+
+            return result
+
+        except HTTPException:
+
+            raise
+
+        except ScraperError as exc:
+
+            logger.exception(
+                "[NEWS] Falha inicial: source=%s",
+                source_key,
+            )
+
+            # -------------------------------------------------
+            # Última tentativa de devolver cache.
+            # -------------------------------------------------
+
+            cached, _ = news_cache.get(cache_key)
+
+            if cached is not None:
+
+                return cached
+
+            raise HTTPException(
+                status_code=503,
+                detail=str(exc),
+            ) from exc
+
+        except Exception as exc:
+
+            logger.exception(
+                "[NEWS] Erro inesperado: source=%s",
+                source_key,
+            )
+
+            # -------------------------------------------------
+            # Se existir cache, não derruba a API.
+            # -------------------------------------------------
+
+            cached, _ = news_cache.get(cache_key)
+
+            if cached is not None:
+
+                return cached
+
+            raise HTTPException(
+                status_code=503,
+                detail=str(exc),
+            ) from exc
+
+
+# ============================================================
+# SOURCES
+# ============================================================
 
 
 @app.get("/sources")
 async def sources() -> dict[str, list[str]]:
-    return {"sources": sorted(SCRAPERS)}
+
+    return {
+        "sources": sorted(SCRAPERS),
+    }
