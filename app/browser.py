@@ -65,9 +65,8 @@ class BrowserManager:
             self.context = await self.browser.new_context(
                 locale="pt-BR",
                 user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                    "Mozilla/5.0 (X11; Linux x86_64)"
-                    "AppleWebKit/537.36 (KHTML, like Gecko)"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/121.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},

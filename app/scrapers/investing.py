@@ -33,6 +33,18 @@ class InvestingHeadlinesScraper(NewsScraper):
         await stealth.apply_stealth_async(page)
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+        try:
+            response = await page.goto(
+                "https://api.ipify.org?format=json",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+
+            print("IP STATUS:", response.status if response else None)
+            print("IP:", await page.locator("body").inner_text())
+
+        finally:
+            pass
 
         try:
 
