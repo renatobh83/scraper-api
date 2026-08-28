@@ -159,9 +159,13 @@ class BrowserManager:
         )
 
     async def new_page(self):
-        if self.context is None:
-            raise RuntimeError("BrowserManager não foi iniciado")
+        await self.restart()
+
         page = await self.context.new_page()
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         return page
+
+    async def restart(self) -> None:
+        await self.close()  # já existe: fecha context, browser e playwright
+        await self.start()  # relança tudo do zero
