@@ -11,6 +11,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
 
     source_name = "fundamentus"
     baseUrl = "https://www.fundamentus.com.br/detalhes.php?papel="
+    historico = "https://www.fundamentus.com.br/amline/cot_hist.php?papel="
 
     async def scrape(
         self,
@@ -23,22 +24,24 @@ class FundamentusHeadlinesScraper(NewsScraper):
                 status_code=503,
                 detail=("O Ticker deve ser informado."),
             )
-        url = f"{self.baseUrl}{ticker}"
+
         page = await context.new_page()
         stealth = Stealth()
         await stealth.apply_stealth_async(page)
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         try:
-            response = await page.goto(
-                url,
+            url_detalhes = f"{self.baseUrl}{ticker}"
+            response_detalhes = await page.goto(
+                url_detalhes,
                 wait_until="commit",
                 timeout=15000,
             )
-            print("STATUS:", response.status if response else None)
+            print("STATUS:", response_detalhes.status if response_detalhes else None)
             print("URL:", page.url)
             print("TITLE:", await page.title())
-            status = response.status if response else None
+
+            status = response_detalhes.status if response_detalhes else None
             if status is not None and status >= 400:
                 title = await page.title()
                 raise ScraperError(
@@ -46,17 +49,47 @@ class FundamentusHeadlinesScraper(NewsScraper):
                     f"(url={page.url}, title={title!r})."
                 )
             try:
-                await page.wait_for_selector('table[class="w728]')
-                pass
+                await page.wait_for_selector('table[class="w728]', timeout=5000)
             except PlaywrightError:
                 # Alguns layouts podem renderizar cards sem o atributo esperado.
                 # O HTML ainda será analisado pelos seletores de fallback.
                 pass
+
+            html = await page.content()
+            dados_detalhes = self._parse_html(html)
+            # print("DADOS DETALHES:", dados_detalhes)
+
+            # Segunda URL - histórico
+            url_historico_api = f"{self.historico}{ticker}"
+            await page.set_extra_http_headers(
+                {
+                    "Referer": f"https://www.fundamentus.com.br/detalhes.php?papel={ticker}",  # REFERER CRUCIAL
+                }
+            )
+            response_historico = await page.goto(
+                url_historico_api,
+                wait_until="commit",
+                timeout=15000,
+            )
+            print(
+                "STATUS HISTORICO:",
+                response_historico.status if response_historico else None,
+            )
+
             if os.getenv("DEBUG_PAUSE", "0") == "1":
                 await page.pause()
-            html = await page.content()
-            items = self._parse_html(html)
-            print(items)
+                # Para requisições AJAX, o conteúdo pode ser JSON
+            if response_historico:
+                # Tenta pegar o JSON diretamente
+                try:
+                    dados_historico = await response_historico.json()
+                    print("DADOS HISTÓRICOS (JSON):", dados_historico)
+                except:
+                    # Se não for JSON, pega o texto
+                    html2 = await page.content()
+                    dados_historico = self._parse_html_historico(html2)
+
+            return {"detalhes": dados_detalhes, "historico": dados_historico}
         except ScraperError:
             raise
         except PlaywrightError as exc:
@@ -64,9 +97,30 @@ class FundamentusHeadlinesScraper(NewsScraper):
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
         finally:
-            # await page.close()
+            await page.close()
             pass
-        return url
+
+    def parse_cookie_string(self, cookie_string: str):
+        """Converte string de cookies para lista de dicionários do Playwright"""
+        cookies = []
+        for item in cookie_string.split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            if "=" in item:
+                name, value = item.split("=", 1)
+                cookies.append(
+                    {
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": ".fundamentus.com.br",  # Ajuste conforme necessário
+                        "path": "/",
+                        "httpOnly": False,
+                        "secure": False,
+                        "sameSite": "Lax",
+                    }
+                )
+        return cookies
 
     def _parse_html(self, html: str):
         dados = {}
