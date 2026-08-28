@@ -28,7 +28,7 @@ scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
 #     )
 # }
 cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
-
+blocked_until: dict[tuple[str, int], float] = {}
 browser_manager = BrowserManager()
 
 
@@ -130,18 +130,19 @@ async def news(
     # ---------------------------------------------------------
 
     cached = cache.get(cache_key)
-
-    if cached is not None:
-
+    now = asyncio.get_running_loop().time()
+    if cached and now - cached[0] < settings.cache_ttl_seconds:
+        return cached[1]
         cached_timestamp, cached_response = cached
-
-        logger.info(
-            "[NEWS] Cache HIT: source=%s limit=%s",
-            source_key,
-            limit,
+    cooldown_end = blocked_until.get(cache_key, 0.0)
+    if now < cooldown_end:
+        if cached:
+            return cached[1].model_copy(update={"stale": True})
+        raise HTTPException(
+            status_code=429,
+            detail="A fonte bloqueou temporariamente novas consultas; tente novamente depois.",
+            headers={"Retry-After": str(int(cooldown_end - now) + 1)},
         )
-
-        return cached_response
 
     # ---------------------------------------------------------
     # 2. NÃO EXISTE CACHE
@@ -159,21 +160,44 @@ async def news(
         # Outra requisição pode ter preenchido o cache
         # enquanto esta aguardava o semaphore.
         # -----------------------------------------------------
-
+        now = asyncio.get_running_loop().time()
         cached = cache.get(cache_key)
 
-        if cached is not None:
+        if cached is not None and now - cached[0] < settings.cache_ttl_seconds:
+            return cached[1]
+        try:
+            await browser_manager.start()
+            if browser_manager.context is None:
+                raise ScraperError("Contexto Playwright não foi criado")
 
-            cached_timestamp, cached_response = cached
+            items = await scraper.scrape(browser_manager.context, limit)
+        except ScraperError as exc:
+            if "HTTP 403" in str(exc):
+                blocked_until[cache_key] = (
+                    asyncio.get_running_loop().time()
+                    + settings.blocked_cooldown_seconds
+                )
 
-            logger.info(
-                "[NEWS] Cache preenchido enquanto aguardava: " "source=%s limit=%s",
-                source_key,
-                limit,
-            )
-
-            return cached_response
-
+            # Se a fonte bloquear uma nova consulta, preserve o último resultado
+            # válido em vez de transformar um bloqueio transitório em falha total.
+            if cached:
+                return cached[1].model_copy(update={"stale": True})
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:
+            if cached:
+                return cached[1].model_copy(update={"stale": True})
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if items is None:
+            return None
+        result = NewsResponse(
+            source=scraper.source_name,
+            fetched_at=datetime.now(timezone.utc),
+            count=len(items),
+            items=list(items),
+        )
+        blocked_until.pop(cache_key, None)
+        cache[cache_key] = (asyncio.get_running_loop().time(), result)
+        return result
         # -----------------------------------------------------
         # 3. INICIA PLAYWRIGHT
         # -----------------------------------------------------
