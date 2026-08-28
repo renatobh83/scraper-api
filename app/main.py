@@ -428,6 +428,37 @@ def start_background_refresh(
     )
 
 
+#
+# TEste
+#
+
+
+@app.get("/teste")
+async def teste():
+    try:
+        await browser_manager.start()
+
+        if browser_manager.context is None:
+            raise ScraperError("Contexto Playwright não foi criado")
+        page = await browser_manager.new_page()
+        print("ANTES IP")
+
+        response = await page.goto(
+            "https://api.ipify.org?format=json",
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+
+        print("DEPOIS IP")
+        print("STATUS IP:", response.status if response else None)
+        print("BODY IP:", await page.text_content("body"))
+        return {"res"}
+    except asyncio.CancelledError:
+        raise
+    except ScraperError as exc:
+        raise
+
+
 # ============================================================
 # NEWS
 # ============================================================
