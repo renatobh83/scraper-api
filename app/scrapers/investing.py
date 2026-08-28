@@ -90,6 +90,16 @@ class InvestingHeadlinesScraper(NewsScraper):
             )
             print("STATUS:", response.status if response else None)
             print("URL:", page.url)
+            if response:
+                print("HEADERS:", await response.all_headers())
+
+                try:
+                    body = await response.body()
+                    print(
+                        "RESPONSE BODY:", body.decode("utf-8", errors="ignore")[:5000]
+                    )
+                except Exception as exc:
+                    print("Erro lendo response body:", exc)
             print("TITLE:", await page.title())
             status = response.status if response else None
             if status is not None and status >= 400:
