@@ -34,12 +34,14 @@ class InvestingHeadlinesScraper(NewsScraper):
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         try:
+            print("ANTES IP")
             response = await page.goto(
                 "https://api.ipify.org?format=json",
                 wait_until="domcontentloaded",
                 timeout=15000,
             )
-
+            print("DEPOIS IP")
+            print(await page.locator("body").inner_text())
             print("IP STATUS:", response.status if response else None)
             print("IP:", await page.locator("body").inner_text())
 
@@ -64,22 +66,13 @@ class InvestingHeadlinesScraper(NewsScraper):
             #         response.url[:200],
             #     ),
             # )
+            print("ANTES DO GOTO")
             response = await page.goto(
                 self.page_url,
                 wait_until="commit",
                 timeout=15000,
             )
-            print(await page.evaluate("""
-    () => ({
-        userAgent: navigator.userAgent,
-        platform: navigator.platform,
-        language: navigator.language,
-        languages: navigator.languages,
-        webdriver: navigator.webdriver,
-        hardwareConcurrency: navigator.hardwareConcurrency,
-        deviceMemory: navigator.deviceMemory
-    })
-"""))
+            print("DEPOIS DO GOTO")
             await jitter(1.0, 2.5)
 
             await human_scroll(
