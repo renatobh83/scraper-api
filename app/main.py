@@ -10,7 +10,6 @@ from app.models import HealthResponse, NewsResponse
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 
-
 browser_manager = BrowserManager()
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
 cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
@@ -60,11 +59,7 @@ async def news(
     cache_key = (source_key, limit)
     now = asyncio.get_running_loop().time()
     cached = cache.get(cache_key)
-    if (
-        cached
-        and not refresh
-        and now - cached[0] < settings.cache_ttl_seconds
-    ):
+    if cached and not refresh and now - cached[0] < settings.cache_ttl_seconds:
         return cached[1]
 
     cooldown_end = blocked_until.get(cache_key, 0.0)
@@ -81,11 +76,7 @@ async def news(
     async with scrape_semaphore:
         now = asyncio.get_running_loop().time()
         cached = cache.get(cache_key)
-        if (
-            cached
-            and not refresh
-            and now - cached[0] < settings.cache_ttl_seconds
-        ):
+        if cached and not refresh and now - cached[0] < settings.cache_ttl_seconds:
             return cached[1]
 
         try:
@@ -110,7 +101,8 @@ async def news(
             if cached:
                 return cached[1].model_copy(update={"stale": True})
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-
+        if items is None:
+            return None
         result = NewsResponse(
             source=scraper.source_name,
             fetched_at=datetime.now(timezone.utc),

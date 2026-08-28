@@ -10,7 +10,9 @@ from app.config import settings
 class BrowserManager:
     """Mantém uma única instância do Chromium por processo da API."""
 
-    BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+    BLOCKED_RESOURCE_TYPES = {
+        # "image", "media", "font"
+    }
     BLOCKED_GOOGLE_DOMAINS = {
         "google.com",
         "google.com.br",
@@ -47,24 +49,21 @@ class BrowserManager:
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy,
                 args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
                 ],
             )
 
             self.context = await self.browser.new_context(
                 locale="pt-BR",
                 user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                    "Mozilla/5.0 (X11; Linux x86_64)"
+                    "AppleWebKit/537.36 (KHTML, like Gecko)"
                     "Chrome/121.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
-                accept_downloads=False,
-                java_script_enabled=True,
-                service_workers="block",
             )
             await self.context.route("**/*", self._handle_route)
 
@@ -125,6 +124,7 @@ class BrowserManager:
         hostname = urlsplit(request_url).hostname
 
         if self.block_google and self._is_blocked_google_host(hostname):
+
             await route.abort(error_code="blockedbyclient")
             return
 
@@ -140,6 +140,7 @@ class BrowserManager:
             return False
 
         hostname = hostname.lower().rstrip(".")
+
         return any(
             hostname == domain or hostname.endswith(f".{domain}")
             for domain in cls.BLOCKED_GOOGLE_DOMAINS
@@ -148,7 +149,6 @@ class BrowserManager:
     async def new_page(self):
         if self.context is None:
             raise RuntimeError("BrowserManager não foi iniciado")
-
         page = await self.context.new_page()
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
