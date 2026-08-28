@@ -19,18 +19,7 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
-
 browser_manager = BrowserManager()
-
-# Cache:
-#
-# {
-#     ("investing", 10): (
-#         timestamp,
-#         NewsResponse(...)
-#     )
-# }
-#
 cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
 
 # Controla quando uma fonte pode voltar a ser consultada
@@ -118,25 +107,6 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-)
-async def health() -> HealthResponse:
-
-    return HealthResponse(
-        status="ok",
-        version=settings.app_version,
-    )
-
-
 # ============================================================
 # FUNÇÃO PARA VERIFICAR CACHE
 # ============================================================
@@ -248,23 +218,24 @@ async def background_refresh(
             try:
 
                 async with scrape_semaphore:
+                    async with browser_manager.scrape_session() as (page, context):
+                        items = await scraper.scrape(context, limit)
+                    # await browser_manager.start()
 
-                    await browser_manager.start()
+                    # if browser_manager.context is None:
 
-                    if browser_manager.context is None:
+                    #     raise ScraperError("Contexto Playwright não foi criado")
 
-                        raise ScraperError("Contexto Playwright não foi criado")
+                    # logger.info(
+                    #     "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
+                    #     source_key,
+                    #     attempt,
+                    # )
 
-                    logger.info(
-                        "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
-                        source_key,
-                        attempt,
-                    )
-
-                    items = await scraper.scrape(
-                        browser_manager.context,
-                        limit,
-                    )
+                    # items = await scraper.scrape(
+                    #     browser_manager.context,
+                    #     limit,
+                    # )
 
                 # --------------------------------------------------
                 # Resultado válido
@@ -428,39 +399,72 @@ def start_background_refresh(
     )
 
 
-#
-# TEste
-#
+# ============================================================
+# HEALTH
+# ============================================================
+
+
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+)
+async def health() -> HealthResponse:
+
+    return HealthResponse(
+        status="ok",
+        version=settings.app_version,
+    )
+
+
+# ============================================================
+# TESTE
+# ============================================================
 
 
 @app.get("/teste")
 async def teste():
-    page = None
     try:
-        await browser_manager.start()
-
-        if browser_manager.context is None:
-            raise ScraperError("Contexto Playwright não foi criado")
-        page = await browser_manager.new_page()
-        print("ANTES IP")
-
-        response = await page.goto(
-            "https://api.ipify.org?format=json",
-            wait_until="domcontentloaded",
-            timeout=30000,
-        )
-
-        print("DEPOIS IP")
-        print("STATUS IP:", response.status if response else None)
-        print("BODY IP:", await page.text_content("body"))
-        return {"res"}
+        async with browser_manager.scrape_session() as (page, context):
+            print("ANTES IP")
+            response = await page.goto(
+                "https://api.ipify.org?format=json",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            print("DEPOIS IP")
+            print("STATUS IP:", response.status if response else None)
+            print("BODY IP:", await page.text_content("body"))
+            return {"res"}
     except asyncio.CancelledError:
         raise
     except ScraperError as exc:
         raise
-    finally:
-        if page:
-            await page.close()
+    # page = None
+    # try:
+    #     await browser_manager.start()
+
+    #     if browser_manager.context is None:
+    #         raise ScraperError("Contexto Playwright não foi criado")
+    #     page = await browser_manager.new_page()
+    #     print("ANTES IP")
+
+    #     response = await page.goto(
+    #         "https://api.ipify.org?format=json",
+    #         wait_until="domcontentloaded",
+    #         timeout=30000,
+    #     )
+
+    #     print("DEPOIS IP")
+    #     print("STATUS IP:", response.status if response else None)
+    #     print("BODY IP:", await page.text_content("body"))
+    #     return {"res"}
+    # except asyncio.CancelledError:
+    #     raise
+    # except ScraperError as exc:
+    #     raise
+    # finally:
+    #     if page:
+    #         await page.close()
 
 
 # ============================================================
@@ -622,22 +626,22 @@ async def news(
 
         try:
 
-            await browser_manager.start()
+            # await browser_manager.start()
 
-            if browser_manager.context is None:
-
-                raise ScraperError("Contexto Playwright não foi criado")
+            # if browser_manager.context is None:
+            #     raise ScraperError("Contexto Playwright não foi criado")
 
             logger.info(
                 "[NEWS] Fazendo scrape inicial: " "source=%s limit=%s",
                 source_key,
                 limit,
             )
-
-            items = await scraper.scrape(
-                browser_manager.context,
-                limit,
-            )
+            async with browser_manager.scrape_session() as (page, context):
+                items = await scraper.scrape(context, limit)
+            # items = await scraper.scrape(
+            #     browser_manager.context,
+            #     limit,
+            # )
 
         except asyncio.CancelledError:
 
@@ -784,6 +788,32 @@ async def news(
     )
 
     return result
+
+
+# ============================================================
+# FUNDAMENTUS
+# ============================================================
+
+
+@app.get("/stocks")
+async def fundamentus(
+    source: str = Query(
+        "fundamentus",
+        min_length=1,
+        max_length=30,
+    ),
+    ticker: str = Query(
+        "PETR4",
+        min_length=1,
+    ),
+):
+    source_key = source.lower()
+    scraper = SCRAPERS.get(source_key)
+    async with browser_manager.scrape_session() as (page, context):
+        url = await scraper.scrape(context, ticker.upper())
+    return {
+        "sources": url,
+    }
 
 
 # ============================================================

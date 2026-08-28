@@ -1,7 +1,8 @@
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlsplit, urlunsplit
-from playwright.async_api import Browser, BrowserContext, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 
 from app.config import settings
@@ -25,6 +26,7 @@ class BrowserManager:
 
     def __init__(self) -> None:
         self._playwright = None
+        self._playwright_lock = asyncio.Lock()
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self._start_lock = asyncio.Lock()
@@ -32,6 +34,13 @@ class BrowserManager:
         self.debug_pause = os.getenv("DEBUG_PAUSE", "0") == "1"
         self.proxy = self._load_proxy()
         self.block_google = os.getenv("BLOCK_GOOGLE", "1") == "1"
+
+    async def _ensure_playwright(self) -> None:
+        if self._playwright is not None:
+            return
+        async with self._playwright_lock:
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
 
     async def start(self) -> None:
         # O navegador só é criado na primeira chamada a /news.
@@ -79,6 +88,66 @@ class BrowserManager:
                 """)
             await self.context.route("**/*", self._handle_route)
 
+    @asynccontextmanager
+    async def scrape_session(self):
+        """
+        Abre um browser + context + page isolados para UMA operação de scrape
+        e fecha tudo ao sair do bloco. Cada chamada usa seu próprio browser
+        (garante IP/túnel novo no proxy) sem interferir em scrapes concorrentes.
+
+        Uso:
+            async with browser_manager.scrape_session() as (page, context):
+                ...
+        """
+        await self._ensure_playwright()
+
+        browser: Browser = await self._playwright.chromium.launch(
+            headless=not self.debug,
+            slow_mo=150 if self.debug else 0,
+            # proxy=self.proxy,
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-extensions",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+                "--disable-ipc-flooding-protection",
+            ],
+        )
+        try:
+            context: BrowserContext = await browser.new_context(
+                locale="pt-BR",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/121.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 900},
+                accept_downloads=False,
+                java_script_enabled=True,
+                service_workers="block",
+            )
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                """)
+            await context.route("**/*", self._handle_route)
+
+            page: Page = await context.new_page()
+            page.set_default_timeout(settings.selector_timeout_ms)
+            page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+
+            try:
+                yield page, context
+            finally:
+                await context.close()
+        finally:
+            await browser.close()
+
     @staticmethod
     def _load_proxy() -> dict[str, str] | None:
         """Carrega proxy sem registrar a URL nem as credenciais."""
@@ -119,17 +188,21 @@ class BrowserManager:
         return None
 
     async def close(self) -> None:
-        if self.context is not None:
-            await self.context.close()
-            self.context = None
-
-        if self.browser is not None:
-            await self.browser.close()
-            self.browser = None
-
+        """Encerra o driver do Playwright (chamar no shutdown da app)."""
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
+        # if self.context is not None:
+        #     await self.context.close()
+        #     self.context = None
+
+        # if self.browser is not None:
+        #     await self.browser.close()
+        #     self.browser = None
+
+        # if self._playwright is not None:
+        #     await self._playwright.stop()
+        #     self._playwright = None
 
     async def _handle_route(self, route) -> None:
         request_url = route.request.url
