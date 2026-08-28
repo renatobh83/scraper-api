@@ -66,13 +66,7 @@ class InvestingHeadlinesScraper(NewsScraper):
             #         response.url[:200],
             #     ),
             # )
-            print("ANTES DO GOTO")
-            response = await page.goto(
-                self.page_url,
-                wait_until="commit",
-                timeout=15000,
-            )
-            print("DEPOIS DO GOTO")
+
             await jitter(1.0, 2.5)
 
             await human_scroll(
