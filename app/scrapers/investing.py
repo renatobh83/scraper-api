@@ -7,12 +7,15 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Error as PlaywrightError
-
+from playwright_stealth import Stealth
 from app.config import settings
+from app.human_behavior import human_scroll, jitter
 from app.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
 
 logger = logging.getLogger(__name__)
+
+SELECTOR_WAIT_TIMEOUT_MS = 3000
 
 
 class InvestingHeadlinesScraper(NewsScraper):
@@ -26,74 +29,91 @@ class InvestingHeadlinesScraper(NewsScraper):
     ) -> list[NewsItem]:
         page = await context.new_page()
         print("Abrindo a pagina")
-        # page.set_default_timeout(settings.selector_timeout_ms)
-        # page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+        stealth = Stealth()
+        await stealth.apply_stealth_async(page)
+        page.set_default_timeout(settings.selector_timeout_ms)
+        page.set_default_navigation_timeout(settings.navigation_timeout_ms)
 
         try:
 
-            # response = await page.goto(
-            #     self.page_url,
-            #     timeout=settings.navigation_timeout_ms,
-            # )
+            response = await page.goto(
+                self.page_url,
+                wait_until="domcontentloaded",
+                timeout=settings.navigation_timeout_ms,
+            )
+            await jitter(1.0, 2.5)
 
-            # print("STATUS:", response.status if response else None)
-            # print("URL:", page.url)
-            # print("TITLE:", await page.title())
-            # status = response.status if response else None
-            # if status is not None and status >= 400:
-            #     title = await page.title()
-            #     await self._save_debug_artifacts(page, f"http_{status}")
-            #     logger.warning(
-            #         "Investing bloqueou a navegação: status=%s url=%s title=%r",
-            #         status,
-            #         page.url,
-            #         title,
-            #     )
-            #     raise ScraperError(
-            #         f"Investing respondeu HTTP {status} mesmo com Playwright "
-            #         f"(url={page.url}, title={title!r})."
-            #     )
+            await human_scroll(
+                page,
+                150,
+                400,
+            )
 
-            # # O seletor final pode ser ajustado após inspecionar a estrutura real
-            # # que a Investing entrega para o seu IP/região.
-            # try:
-            #     await page.wait_for_selector(
-            #         'div[data-test="breaking-news"] '
-            #         'div[data-test="breaking-news-article"] '
-            #         'a[href*="/news/"], '
-            #         'a[data-test="article-title"], '
-            #         'article a[href*="/news/"]',
-            #         state="attached",
-            #         timeout=settings.selector_timeout_ms,
-            #     )
-            # except PlaywrightError:
-            #     # Alguns layouts podem renderizar cards sem o atributo esperado.
-            #     # O HTML ainda será analisado pelos seletores de fallback.
-            #     pass
+            await jitter(0.5, 1.5)
 
-            # if os.getenv("DEBUG_PAUSE", "0") == "1":
-            #     await page.pause()
+            await human_scroll(
+                page,
+                250,
+                700,
+            )
+            print("STATUS:", response.status if response else None)
+            print("URL:", page.url)
+            print("TITLE:", await page.title())
+            status = response.status if response else None
+            if status is not None and status >= 400:
+                title = await page.title()
+                # await self._save_debug_artifacts(page, f"http_{status}")
+                logger.warning(
+                    "Investing bloqueou a navegação: status=%s url=%s title=%r",
+                    status,
+                    page.url,
+                    title,
+                )
+                raise ScraperError(
+                    f"Investing respondeu HTTP {status} mesmo com Playwright "
+                    f"(url={page.url}, title={title!r})."
+                )
 
-            # html = await page.content()
-            # items = self._parse_html(html, limit)
-            # if not items:
-            #     body_text = " ".join((await page.locator("body").inner_text()).split())[
-            #         :300
-            #     ]
-            #     await self._save_debug_artifacts(page, "no_news")
-            #     logger.warning(
-            #         "Nenhuma notícia encontrada: status=%s url=%s title=%r body=%r",
-            #         status,
-            #         page.url,
-            #         await page.title(),
-            #         body_text,
-            #     )
-            #     raise ScraperError(
-            #         "Nenhuma notícia encontrada no HTML renderizado da Investing. "
-            #         "Verifique os logs do container para o diagnóstico."
-            #     )
+            # O seletor final pode ser ajustado após inspecionar a estrutura real
+            # que a Investing entrega para o seu IP/região.
+            try:
+                await page.wait_for_selector(
+                    'div[data-test="breaking-news"] '
+                    'div[data-test="breaking-news-article"] '
+                    'a[href*="/news/"], '
+                    'a[data-test="article-title"], '
+                    'article a[href*="/news/"]',
+                    state="attached",
+                    timeout=SELECTOR_WAIT_TIMEOUT_MS,
+                )
+            except PlaywrightError:
+                # Alguns layouts podem renderizar cards sem o atributo esperado.
+                # O HTML ainda será analisado pelos seletores de fallback.
+                pass
 
-            return None
+            if os.getenv("DEBUG_PAUSE", "0") == "1":
+                await page.pause()
+
+            html = await page.content()
+            items = self._parse_html(html, limit)
+            if not items:
+                body_text = " ".join((await page.locator("body").inner_text()).split())[
+                    :300
+                ]
+                # await self._save_debug_artifacts(page, "no_news")
+                logger.warning(
+                    "Nenhuma notícia encontrada: status=%s url=%s title=%r body=%r",
+                    status,
+                    page.url,
+                    await page.title(),
+                    body_text,
+                )
+                raise ScraperError(
+                    "Nenhuma notícia encontrada no HTML renderizado da Investing. "
+                    "Verifique os logs do container para o diagnóstico."
+                )
+
+            return items
         except ScraperError:
             raise
         except PlaywrightError as exc:

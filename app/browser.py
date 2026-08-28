@@ -1,8 +1,8 @@
 import asyncio
 import os
 from urllib.parse import unquote, urlsplit, urlunsplit
-
 from playwright.async_api import Browser, BrowserContext, async_playwright
+
 
 from app.config import settings
 
@@ -11,7 +11,7 @@ class BrowserManager:
     """Mantém uma única instância do Chromium por processo da API."""
 
     BLOCKED_RESOURCE_TYPES = {
-        # "image", "media", "font"
+        # "image", "media", "font","stylesheet"
     }
     BLOCKED_GOOGLE_DOMAINS = {
         "google.com",
@@ -22,6 +22,7 @@ class BrowserManager:
         "google-analytics.com",
         "doubleclick.net",
         "googlesyndication.com",
+        "monetization.prod.invmed",
     }
 
     def __init__(self) -> None:
@@ -49,9 +50,15 @@ class BrowserManager:
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy,
                 args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-ipc-flooding-protection",
                 ],
             )
 
@@ -64,7 +71,15 @@ class BrowserManager:
                     "Chrome/121.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
+                accept_downloads=False,
+                java_script_enabled=True,
+                service_workers="block",
             )
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                """)
             await self.context.route("**/*", self._handle_route)
 
     @staticmethod
