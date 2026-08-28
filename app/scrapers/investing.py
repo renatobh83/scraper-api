@@ -47,11 +47,27 @@ class InvestingHeadlinesScraper(NewsScraper):
             pass
 
         try:
+            page.on(
+                "request",
+                lambda request: print(
+                    "REQ:",
+                    request.method,
+                    request.url[:200],
+                ),
+            )
 
+            page.on(
+                "response",
+                lambda response: print(
+                    "RESP:",
+                    response.status,
+                    response.url[:200],
+                ),
+            )
             response = await page.goto(
                 self.page_url,
-                wait_until="domcontentloaded",
-                timeout=settings.navigation_timeout_ms,
+                wait_until="commit",
+                timeout=15000,
             )
             await jitter(1.0, 2.5)
 
