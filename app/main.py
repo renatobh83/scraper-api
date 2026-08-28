@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, HTTPException, Query
 
 from app.browser import BrowserManager
@@ -30,6 +30,111 @@ scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
 cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
 blocked_until: dict[tuple[str, int], float] = {}
 browser_manager = BrowserManager()
+background_refresh_tasks: dict[tuple[str, int], asyncio.Task] = {}
+
+
+async def background_retry_news(
+    cache_key: tuple[str, int],
+    scraper,
+    limit: int,
+):
+    """
+    Tenta atualizar as notícias em background após receber
+    403/407.
+
+    O usuário não fica esperando.
+    """
+
+    delays = [30, 60]
+
+    try:
+
+        logger.info(
+            "[NEWS] Retry em background iniciado: source=%s limit=%s",
+            cache_key[0],
+            limit,
+        )
+
+        for tentativa, delay in enumerate(delays, start=1):
+
+            await asyncio.sleep(delay)
+
+            logger.info(
+                "[NEWS] Retry background: source=%s " "tentativa=%s/%s",
+                cache_key[0],
+                tentativa,
+                len(delays),
+            )
+
+            async with scrape_semaphore:
+
+                try:
+
+                    await browser_manager.start()
+
+                    if browser_manager.context is None:
+                        raise ScraperError("Contexto Playwright não foi criado")
+
+                    items = await scraper.scrape(
+                        browser_manager.context,
+                        limit,
+                    )
+
+                    if items is None:
+                        raise ScraperError("Scraper não retornou notícias")
+
+                    result = NewsResponse(
+                        source=scraper.source_name,
+                        fetched_at=datetime.now(timezone.utc),
+                        count=len(items),
+                        stale=False,
+                        items=list(items),
+                    )
+
+                    cache[cache_key] = (
+                        asyncio.get_running_loop().time(),
+                        result,
+                    )
+
+                    blocked_until.pop(cache_key, None)
+
+                    logger.info(
+                        "[NEWS] Retry background SUCESSO: " "source=%s items=%s",
+                        cache_key[0],
+                        len(items),
+                    )
+
+                    return
+
+                except ScraperError as exc:
+
+                    logger.warning(
+                        "[NEWS] Retry background falhou: "
+                        "source=%s tentativa=%s erro=%s",
+                        cache_key[0],
+                        tentativa,
+                        exc,
+                    )
+
+                    continue
+
+                except Exception as exc:
+
+                    logger.exception(
+                        "[NEWS] Erro no retry background: " "source=%s",
+                        cache_key[0],
+                    )
+
+                    continue
+
+        logger.warning(
+            "[NEWS] Retry background terminou sem sucesso: " "source=%s",
+            cache_key[0],
+        )
+
+    finally:
+
+        background_refresh_tasks.pop(cache_key, None)
 
 
 # ============================================================
@@ -88,10 +193,7 @@ async def health() -> HealthResponse:
 # ============================================================
 
 
-@app.get(
-    "/news",
-    response_model=NewsResponse,
-)
+@app.get("/news")
 async def news(
     source: str = Query(
         "investing",
@@ -172,17 +274,63 @@ async def news(
 
             items = await scraper.scrape(browser_manager.context, limit)
         except ScraperError as exc:
-            if "HTTP 403" in str(exc):
-                blocked_until[cache_key] = (
-                    asyncio.get_running_loop().time()
-                    + settings.blocked_cooldown_seconds
-                )
+            error_text = str(exc)
 
-            # Se a fonte bloquear uma nova consulta, preserve o último resultado
-            # válido em vez de transformar um bloqueio transitório em falha total.
-            if cached:
-                return cached[1].model_copy(update={"stale": True})
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            is_blocked = (
+                "HTTP 403" in error_text
+                or "HTTP 407" in error_text
+                or "403" in error_text
+                or "407" in error_text
+            )
+            if is_blocked:
+
+                blocked_until[cache_key] = asyncio.get_running_loop().time() + 60
+
+                # ---------------------------------------------------------
+                # Inicia apenas UMA tarefa de retry por fonte/limit
+                # ---------------------------------------------------------
+
+                existing_task = background_refresh_tasks.get(cache_key)
+
+                if existing_task is None or existing_task.done():
+
+                    task = asyncio.create_task(
+                        background_retry_news(
+                            cache_key=cache_key,
+                            scraper=scraper,
+                            limit=limit,
+                        )
+                    )
+
+                    background_refresh_tasks[cache_key] = task
+
+                    logger.info(
+                        "[NEWS] Retry background agendado: " "source=%s limit=%s",
+                        source_key,
+                        limit,
+                    )
+
+                # ---------------------------------------------------------
+                # Não espera o retry.
+                # Responde imediatamente ao usuário.
+                # ---------------------------------------------------------
+
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "processing",
+                        "message": (
+                            "A consulta está sendo processada. "
+                            "Tente novamente em aproximadamente 1 minuto."
+                        ),
+                        "source": source_key,
+                        "limit": limit,
+                        "retry_after": 60,
+                    },
+                    headers={
+                        "Retry-After": "60",
+                    },
+                )
         except Exception as exc:
             if cached:
                 return cached[1].model_copy(update={"stale": True})
@@ -197,122 +345,6 @@ async def news(
         )
         blocked_until.pop(cache_key, None)
         cache[cache_key] = (asyncio.get_running_loop().time(), result)
-        return result
-        # -----------------------------------------------------
-        # 3. INICIA PLAYWRIGHT
-        # -----------------------------------------------------
-
-        try:
-
-            await browser_manager.start()
-
-            if browser_manager.context is None:
-
-                raise ScraperError("Contexto Playwright não foi criado")
-
-            # -------------------------------------------------
-            # 4. SCRAPE
-            # -------------------------------------------------
-
-            logger.info(
-                "[NEWS] Fazendo scrape: source=%s limit=%s",
-                source_key,
-                limit,
-            )
-
-            items = await scraper.scrape(
-                browser_manager.context,
-                limit,
-            )
-
-        except ScraperError as exc:
-
-            logger.exception(
-                "[NEWS] Falha ao consultar source=%s",
-                source_key,
-            )
-
-            # -------------------------------------------------
-            # Se por algum motivo existir cache, devolve ele.
-            # -------------------------------------------------
-
-            cached = cache.get(cache_key)
-
-            if cached is not None:
-
-                logger.warning(
-                    "[NEWS] Scrape falhou, devolvendo cache: " "source=%s",
-                    source_key,
-                )
-
-                return cached[1]
-
-            raise HTTPException(
-                status_code=503,
-                detail=str(exc),
-            ) from exc
-
-        except Exception as exc:
-
-            logger.exception(
-                "[NEWS] Erro inesperado source=%s",
-                source_key,
-            )
-
-            cached = cache.get(cache_key)
-
-            if cached is not None:
-
-                return cached[1]
-
-            raise HTTPException(
-                status_code=503,
-                detail=str(exc),
-            ) from exc
-
-        # -----------------------------------------------------
-        # 5. VALIDA RESULTADO
-        # -----------------------------------------------------
-
-        if items is None:
-
-            raise HTTPException(
-                status_code=503,
-                detail=("O scraper não retornou nenhuma notícia."),
-            )
-
-        # -----------------------------------------------------
-        # 6. MONTA RESPONSE
-        # -----------------------------------------------------
-
-        result = NewsResponse(
-            source=scraper.source_name,
-            fetched_at=datetime.now(timezone.utc),
-            count=len(items),
-            stale=False,
-            items=list(items),
-        )
-
-        # -----------------------------------------------------
-        # 7. SALVA CACHE
-        # -----------------------------------------------------
-
-        cache[cache_key] = (
-            asyncio.get_running_loop().time(),
-            result,
-        )
-
-        logger.info(
-            "[NEWS] Cache atualizado: source=%s limit=%s " "items=%s",
-            source_key,
-            limit,
-            len(items),
-        )
-
-        # -----------------------------------------------------
-        # 8. RETORNA
-        # -----------------------------------------------------
-
         return result
 
 
