@@ -11,6 +11,9 @@ from bs4 import BeautifulSoup
 from app.config import settings
 from calendar import monthrange
 from app.scrapers.adapters.Fundamentus.fundamentus_type import build_response
+
+
+from typing import Any, Optional
 class FundamentusHeadlinesScraper(NewsScraper):
 
     source_name = "fundamentus"
@@ -25,7 +28,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
         if not ticker:
             raise HTTPException(
                 status_code=503,
-                
+
                 detail=("O Ticker deve ser informado."),
             )
 
