@@ -795,7 +795,7 @@ async def news(
 # ============================================================
 
 
-@app.get("/stocks")
+@app.get("/tickers")
 async def fundamentus(
     source: str = Query(
         "fundamentus",
@@ -810,12 +810,55 @@ async def fundamentus(
     source_key = source.lower()
     scraper = SCRAPERS.get(source_key)
     async with browser_manager.scrape_session() as (page, context):
-        url = await scraper.scrape(context, ticker.upper())
-    return {
-        "sources": url,
-    }
+        dados = await scraper.search(context, ticker.upper())
+    return dados
 
+@app.get("/tickers/historical")
+async def fundamentus(
+    source: str = Query(
+        "fundamentus",
+        min_length=1,
+        max_length=30,
+        description="Fonte dos dados (fundamentus, yahoo, etc)"
+    ),
+    ticker: str = Query(
+        "PETR4",
+        min_length=1,
+        description="Código do ativo (ex: PETR4, VALE3)"
+    ),
+     range: str = Query(
+        "1m0",
+        min_length=1,
+        max_length=10,
+        description="Intervalo dos dados (1d, 1wk, 1mo, etc)"
+    ),
+    interval: str = Query(
+        "1m0",
+        min_length=1,
+        max_length=10,
+        description="Intervalo dos dados (1d, 1wk, 1mo, etc)"
+    ),
+    order: str = Query(
+        "asc",
+        min_length=3,
+        max_length=4,
+        description="Ordem de classificação (asc ou desc)"
+    ),
+    
 
+):
+    if order.lower() not in ["asc", "desc"]:
+        raise HTTPException(
+            status_code=400,
+            detail="O parâmetro 'order' deve ser 'asc' ou 'desc'"
+        )
+    source_key = source.lower()
+    scraper = SCRAPERS.get(source_key)
+    order_map = {"asc": False, "desc": True}
+    is_descending = order_map.get(order.lower(), False)
+    async with browser_manager.scrape_session() as (page, context):
+        dados = await scraper.scrape(context, ticker.upper(), range ,is_descending )
+    return dados
 # ============================================================
 # SOURCES
 # ============================================================
