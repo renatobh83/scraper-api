@@ -189,20 +189,20 @@ class BrowserManager:
 
     async def close(self) -> None:
         """Encerra o driver do Playwright (chamar no shutdown da app)."""
-        if self._playwright is not None:
-            await self._playwright.stop()
-            self._playwright = None
-        # if self.context is not None:
-        #     await self.context.close()
-        #     self.context = None
-
-        # if self.browser is not None:
-        #     await self.browser.close()
-        #     self.browser = None
-
         # if self._playwright is not None:
         #     await self._playwright.stop()
         #     self._playwright = None
+        if self.context is not None:
+            await self.context.close()
+            self.context = None
+
+        if self.browser is not None:
+            await self.browser.close()
+            self.browser = None
+
+        if self._playwright is not None:
+            await self._playwright.stop()
+            self._playwright = None
 
     async def _handle_route(self, route) -> None:
         request_url = route.request.url

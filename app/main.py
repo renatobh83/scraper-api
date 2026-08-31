@@ -221,17 +221,13 @@ async def background_refresh(
                     # async with browser_manager.scrape_session() as (page, context):
                     #     items = await scraper.scrape(context, limit)
                     await browser_manager.start()
-
                     if browser_manager.context is None:
-
                         raise ScraperError("Contexto Playwright não foi criado")
-
                     logger.info(
                         "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
                         source_key,
                         attempt,
                     )
-
                     items = await scraper.scrape(
                         browser_manager.context,
                         limit,
