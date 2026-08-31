@@ -2,11 +2,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from logging import handlers
-import logging.config
+from app.security import verify_api_key
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 
-from fastapi import FastAPI, HTTPException, Query
-from uvicorn.config import LOGGING_CONFIG
 
 from app.browser import BrowserManager
 from app.config import settings
@@ -107,6 +105,7 @@ app = FastAPI(
         "API para coleta de notícias com Playwright " "e cache com retry em background."
     ),
     lifespan=lifespan,
+    dependencies=[Depends(verify_api_key)],  # protege TODAS as rotas
 )
 # ============================================================
 # FUNÇÃO PARA VERIFICAR CACHE
@@ -400,18 +399,18 @@ def start_background_refresh(
 # HEALTH
 # ============================================================
 
+public_router = APIRouter()
 
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-)
+
+@public_router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-
     return HealthResponse(
         status="ok",
         version=settings.app_version,
     )
 
+
+app.include_router(public_router)
 
 # ============================================================
 # TESTE

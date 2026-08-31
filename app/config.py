@@ -9,6 +9,7 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
+    api_key: str = os.getenv("API_KEY")
     app_name: str = os.getenv("APP_NAME", "News Scraper API")
     app_version: str = os.getenv("APP_VERSION", "0.2.0")
     host: str = os.getenv("HOST", "0.0.0.0")
