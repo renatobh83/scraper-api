@@ -626,22 +626,22 @@ async def news(
 
         try:
 
-            # await browser_manager.start()
+            await browser_manager.start()
 
-            # if browser_manager.context is None:
-            #     raise ScraperError("Contexto Playwright não foi criado")
+            if browser_manager.context is None:
+                raise ScraperError("Contexto Playwright não foi criado")
 
             logger.info(
                 "[NEWS] Fazendo scrape inicial: " "source=%s limit=%s",
                 source_key,
                 limit,
             )
-            async with browser_manager.scrape_session() as (page, context):
-                items = await scraper.scrape(context, limit)
-            # items = await scraper.scrape(
-            #     browser_manager.context,
-            #     limit,
-            # )
+            # async with browser_manager.scrape_session() as (page, context):
+            #     items = await scraper.scrape(context, limit)
+            items = await scraper.scrape(
+                browser_manager.context,
+                limit,
+            )
 
         except asyncio.CancelledError:
 
@@ -813,52 +813,50 @@ async def fundamentus(
         dados = await scraper.search(context, ticker.upper())
     return dados
 
+
 @app.get("/tickers/historical")
 async def fundamentus(
     source: str = Query(
         "fundamentus",
         min_length=1,
         max_length=30,
-        description="Fonte dos dados (fundamentus, yahoo, etc)"
+        description="Fonte dos dados (fundamentus, yahoo, etc)",
     ),
     ticker: str = Query(
-        "PETR4",
-        min_length=1,
-        description="Código do ativo (ex: PETR4, VALE3)"
+        "PETR4", min_length=1, description="Código do ativo (ex: PETR4, VALE3)"
     ),
-     range: str = Query(
+    range: str = Query(
         "1m0",
         min_length=1,
         max_length=10,
-        description="Intervalo dos dados (1d, 1wk, 1mo, etc)"
+        description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
     ),
     interval: str = Query(
         "1m0",
         min_length=1,
         max_length=10,
-        description="Intervalo dos dados (1d, 1wk, 1mo, etc)"
+        description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
     ),
     order: str = Query(
         "asc",
         min_length=3,
         max_length=4,
-        description="Ordem de classificação (asc ou desc)"
+        description="Ordem de classificação (asc ou desc)",
     ),
-    
-
 ):
     if order.lower() not in ["asc", "desc"]:
         raise HTTPException(
-            status_code=400,
-            detail="O parâmetro 'order' deve ser 'asc' ou 'desc'"
+            status_code=400, detail="O parâmetro 'order' deve ser 'asc' ou 'desc'"
         )
     source_key = source.lower()
     scraper = SCRAPERS.get(source_key)
     order_map = {"asc": False, "desc": True}
     is_descending = order_map.get(order.lower(), False)
     async with browser_manager.scrape_session() as (page, context):
-        dados = await scraper.scrape(context, ticker.upper(), range ,is_descending )
+        dados = await scraper.scrape(context, ticker.upper(), range, is_descending)
     return dados
+
+
 # ============================================================
 # SOURCES
 # ============================================================
