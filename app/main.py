@@ -438,7 +438,7 @@ async def teste():
     #     raise
     page = None
     try:
-        await browser_manager.start()
+        await browser_manager.start(useProxy=True)
 
         if browser_manager.context is None:
             raise ScraperError("Contexto Playwright não foi criado")
@@ -796,8 +796,8 @@ async def fundamentus(
 ):
     source_key = source.lower()
     scraper = SCRAPERS.get(source_key)
-    print(ticker)
-    await browser_manager.start()
+
+    await browser_manager.start(useProxy=True)
     if browser_manager.context is None:
         raise ScraperError("Contexto Playwright não foi criado")
     dados = await scraper.search(browser_manager.context, ticker.upper())
@@ -845,7 +845,7 @@ async def fundamentus(
     order_map = {"asc": False, "desc": True}
     is_descending = order_map.get(order.lower(), False)
 
-    await browser_manager.start()
+    await browser_manager.start(useProxy=True)
     if browser_manager.context is None:
         raise ScraperError("Contexto Playwright não foi criado")
     dados = await scraper.scrape(
