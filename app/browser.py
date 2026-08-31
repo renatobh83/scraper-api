@@ -42,7 +42,7 @@ class BrowserManager:
             if self._playwright is None:
                 self._playwright = await async_playwright().start()
 
-    async def start(self) -> None:
+    async def start(self, useProxy=False) -> None:
         # O navegador só é criado na primeira chamada a /news.
         if self.browser is not None:
             return
@@ -55,7 +55,7 @@ class BrowserManager:
             self.browser = await self._playwright.chromium.launch(
                 headless=not self.debug,
                 slow_mo=150 if self.debug else 0,
-                proxy=self.proxy,
+                proxy=self.proxy if useProxy and self.proxy else None,
                 args=[
                     "--disable-dev-shm-usage",
                     "--disable-extensions",
@@ -233,12 +233,12 @@ class BrowserManager:
 
     async def new_page(self):
         await self.restart()
-
         page = await self.context.new_page()
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         return page
 
     async def restart(self) -> None:
+
         await self.close()  # já existe: fecha context, browser e playwright
         await self.start()  # relança tudo do zero

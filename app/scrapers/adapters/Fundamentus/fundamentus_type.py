@@ -20,10 +20,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-
 # ---------------------------------------------------------------------------
 # Helpers de parsing de números no formato brasileiro
 # ---------------------------------------------------------------------------
+
 
 def parse_br_float(value: Optional[str]) -> Optional[float]:
     """'561.304.000.000' -> 561304000000.0 | '43,55' -> 43.55 | '-21,26' -> -21.26"""
@@ -100,8 +100,16 @@ FUNDAMENTAL_FIELDS: dict[str, tuple[str, str]] = {
 
 # Variações históricas (Dia, Mês, 30 dias, 12 meses, anos-calendário) — todas percent
 HISTORICAL_VARIATION_KEYS = {
-    "Dia", "Mês", "30 dias", "12 meses",
-    "2021", "2022", "2023", "2024", "2025", "2026",
+    "Dia",
+    "Mês",
+    "30 dias",
+    "12 meses",
+    "2021",
+    "2022",
+    "2023",
+    "2024",
+    "2025",
+    "2026",
 }
 
 # Campos de balanço em valores absolutos (R$) — number puro
@@ -147,7 +155,9 @@ FII_BALANCE_FIELDS: dict[str, str] = {
 }
 
 
-def build_fundamentals(source: dict[str, Any], sub_type: Optional[str]) -> list[dict[str, Any]]:
+def build_fundamentals(
+    source: dict[str, Any], sub_type: Optional[str]
+) -> list[dict[str, Any]]:
     """Monta a lista de indicadores no formato [{key, label, kind, value}, ...].
 
     Usa o mapeamento de FII quando sub_type == 'fii', senão o de ação.
@@ -160,30 +170,38 @@ def build_fundamentals(source: dict[str, Any], sub_type: Optional[str]) -> list[
         raw = source.get(src_key)
         if raw in (None, ""):
             continue
-        value = parse_br_percent_fraction(raw) if kind == "percent" else parse_br_float(raw)
-        indicators.append({"key": src_key, "label": label, "kind": kind, "value": value})
+        value = (
+            parse_br_percent_fraction(raw) if kind == "percent" else parse_br_float(raw)
+        )
+        indicators.append(
+            {"key": src_key, "label": label, "kind": kind, "value": value}
+        )
 
     for key in HISTORICAL_VARIATION_KEYS:
         raw = source.get(key)
         if raw in (None, ""):
             continue
-        indicators.append({
-            "key": key,
-            "label": key,
-            "kind": "percent",
-            "value": parse_br_percent_fraction(raw),
-        })
+        indicators.append(
+            {
+                "key": key,
+                "label": key,
+                "kind": "percent",
+                "value": parse_br_percent_fraction(raw),
+            }
+        )
 
     for src_key, label in balance_map.items():
         raw = source.get(src_key)
         if raw in (None, ""):
             continue
-        indicators.append({
-            "key": src_key,
-            "label": label,
-            "kind": "number",
-            "value": parse_br_float(raw),
-        })
+        indicators.append(
+            {
+                "key": src_key,
+                "label": label,
+                "kind": "number",
+                "value": parse_br_float(raw),
+            }
+        )
 
     return indicators
 
@@ -201,7 +219,10 @@ def get_fundamental_value(fundamentals: list[dict[str, Any]], key: str) -> Any:
 # Adapter principal
 # ---------------------------------------------------------------------------
 
-def extract_ticker_and_sub_type(source: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+
+def extract_ticker_and_sub_type(
+    source: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
     """
     A origem manda a ação em 'Papel' (ex: 'PETR4') e o FII em 'FII' (ex: 'VGHF11').
     Retorna (ticker, subType) — subType='fii' só quando veio pela chave 'FII'.
@@ -248,6 +269,7 @@ def build_meta(source: dict[str, Any], sub_type: Optional[str]) -> dict[str, Any
 
 def build_asset(source: dict[str, Any]) -> dict[str, Any]:
     """Converte um dict bruto (retorno da sua API/scraper) para o objeto 'asset' normalizado."""
+
     papel, sub_type = extract_ticker_and_sub_type(source)
 
     return {
@@ -267,15 +289,50 @@ def build_asset(source: dict[str, Any]) -> dict[str, Any]:
             "marketCap": parse_br_float(source.get("Valor de mercado")),
         },
         "fundamentals": build_fundamentals(source, sub_type),
-        "variacaoDia":parse_br_percent_fraction(source.get("Dia")),
+        "variacaoDia": parse_br_percent_fraction(source.get("Dia")),
         "meta": build_meta(source, sub_type),
+    }
+
+
+def build_asset_list(source: dict[str, Any]) -> dict[str, Any]:
+    """Converte um dict bruto (retorno da sua API/scraper) para o objeto 'asset' normalizado."""
+    return {
+        "symbol": source.get("ticker"),
+        "name": source.get("nome"),
+        # "assetType": infer_asset_type(sub_type),
+        # "subType": sub_type,
+        # "currency": "BRL",
+        # "active": True,
+        # "exchange": "B3",
+        # "sector": source.get("Segmento") if sub_type == "fii" else source.get("Setor"),
+        # "logoUrl": None,
+        # "quote": {
+        #     "lastPrice": parse_br_float(source.get("Cotação")),
+        #     "changePercent": parse_br_percent(source.get("Dia")),
+        #     "volume": parse_br_float(source.get("Vol $ méd (2m)")),
+        #     "marketCap": parse_br_float(source.get("Valor de mercado")),
+        # },
+        # "fundamentals": build_fundamentals(source, sub_type),
+        # "variacaoDia": parse_br_percent_fraction(source.get("Dia")),
+        # "meta": build_meta(source, sub_type),
+    }
+
+
+async def build_list_response(sources_list: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "requestedAt": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "results": [build_asset_list(src) for src in sources_list],
     }
 
 
 def build_response(sources_list: list[dict[str, Any]]) -> dict[str, Any]:
     """Monta o payload final: {requestedAt, assets: [...]}."""
     return {
-        "requestedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "requestedAt": datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
         "results": [build_asset(src) for src in sources_list],
     }
 
