@@ -42,7 +42,7 @@ class BrowserManager:
             if self._playwright is None:
                 self._playwright = await async_playwright().start()
 
-    async def start(self, useProxy=False) -> None:
+    async def start(self, useProxy=True) -> None:
         # O navegador só é criado na primeira chamada a /news.
         if self.browser is not None:
             return

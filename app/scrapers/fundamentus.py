@@ -15,7 +15,6 @@ from app.scrapers.adapters.Fundamentus.fundamentus_type import (
     build_response,
 )
 
-
 from typing import Any, Optional
 
 
@@ -24,6 +23,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
     source_name = "fundamentus"
     baseUrl = "https://www.fundamentus.com.br/detalhes.php?papel="
     historico = "https://www.fundamentus.com.br/amline/cot_hist.php?papel="
+    proventos = "https://www.fundamentus.com.br/fii_proventos.php?papel="
 
     async def search(
         self,
@@ -38,11 +38,37 @@ class FundamentusHeadlinesScraper(NewsScraper):
 
         page = await self._openPage(context)
         try:
+
+            # url_historico_proventos = f"{self.proventos}{ticker}&tipo=2"
+
+            # response_detalhes = await page.goto(
+            #     url_historico_proventos,
+            #     wait_until="domcontentloaded",
+            #     timeout=15000,
+            # )
+            # if os.getenv("DEBUG_PAUSE", "0") == "1":
+            #     await page.pause()
+            # status = response_detalhes.status if response_detalhes else None
+            # if status is not None and status >= 400:
+            #     title = await page.title()
+            #     raise ScraperError(
+            #         f"Fundamentus respondeu HTTP {status} mesmo com Playwright "
+            #         f"(url={page.url}, title={title!r})."
+            #     )
+            # try:
+            #     await page.wait_for_selector('table[id="resultado]', timeout=5000)
+
+            # except PlaywrightError:
+            #     # Alguns layouts podem renderizar cards sem o atributo esperado.
+            #     # O HTML ainda será analisado pelos seletores de fallback.
+            #     pass
+            # html = await page.content()
+            # proventos = self._parse_proventos_html(html)
             url_detalhes = f"{self.baseUrl}{ticker}"
 
             response_detalhes = await page.goto(
                 url_detalhes,
-                wait_until="commit",
+                wait_until="domcontentloaded",
                 timeout=15000,
             )
             print("STATUS:", response_detalhes.status if response_detalhes else None)
@@ -53,6 +79,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
                     f"Fundamentus respondeu HTTP {status} mesmo com Playwright "
                     f"(url={page.url}, title={title!r})."
                 )
+
             await page.wait_for_timeout(1000)
             html = await page.content()
             # Verificar se existe a tabela de detalhes (ativo único)
@@ -71,6 +98,16 @@ class FundamentusHeadlinesScraper(NewsScraper):
                     pass
                 html = await page.content()
                 dados_detalhes = self._parse_html(html)
+                if self._is_fii(dados_detalhes):
+                    print(f"🔍 Buscando proventos para FII: {ticker}")
+                    proventos = await self._buscar_proventos(context, ticker)
+                    if proventos:
+                        dados_detalhes["proventos"] = proventos
+                    else:
+                        dados_detalhes["proventos"] = None
+                else:
+                    dados_detalhes["proventos"] = None
+
                 return build_response([dados_detalhes])
             elif has_lista:
                 print("Processando como lista de ativos...")
@@ -84,13 +121,42 @@ class FundamentusHeadlinesScraper(NewsScraper):
                 resultados_filtrados = [
                     item
                     for item in dados_lista
-                    if item.get("ticker", "").lower().startswith(ticker.lower())
+                    if (
+                        ticker.lower() in item.get("ticker", "").lower()
+                        or ticker.lower() in item.get("nome", "").lower()
+                        or ticker.lower() in item.get("razao_social", "").lower()
+                    )
                 ]
+                # Ordena: primeiro os que começam com o termo, depois os que contêm
+                resultados_filtrados.sort(
+                    key=lambda x: (
+                        (
+                            0
+                            if x.get("ticker", "").lower().startswith(ticker.lower())
+                            else 1
+                        ),
+                        x.get("ticker", "").lower(),
+                    )
+                )
                 tickers_encontrados = [item["ticker"] for item in resultados_filtrados]
+
                 detalhes_completos = await self._buscar_detalhes_da_lista(
                     context, tickers_encontrados
                 )
-
+                # 🔥 PARA CADA FII NA LISTA, BUSCA PROVENTOS
+                for i, item in enumerate(detalhes_completos):
+                    print(i)
+                    if self._is_fii(item):
+                        print(f"🔍 Buscando proventos para FII: {item.get('ticker')}")
+                        proventos = await self._buscar_proventos(
+                            context, item.get("ticker")
+                        )
+                        if proventos:
+                            detalhes_completos[i]["proventos"] = proventos
+                        else:
+                            detalhes_completos[i]["proventos"] = None
+                    else:
+                        detalhes_completos[i]["proventos"] = None
                 return build_response(detalhes_completos)
         except ScraperError:
             raise
@@ -140,9 +206,11 @@ class FundamentusHeadlinesScraper(NewsScraper):
                 # Tenta pegar o JSON diretamente
                 try:
                     dados_historico = await response_historico.json()
+
                     historico = self.processar_historico_fundamentus(
                         dados_historico, periodo=interval, sortOrder=order
                     )
+
                 except:
                     # Se não for JSON, pega o texto
                     html2 = await page.content()
@@ -198,6 +266,67 @@ class FundamentusHeadlinesScraper(NewsScraper):
             return self._parse_html(html)
         finally:
             await page.close()
+
+    async def _buscar_proventos(
+        self, context: BrowserContext, ticker: str
+    ) -> Optional[dict]:
+        """
+        Busca os proventos de um FII usando Playwright.
+        Retorna None se não for FII ou se não encontrar dados.
+        """
+        try:
+            url_proventos = f"{self.proventos}{ticker}&tipo=2"
+
+            # Cria uma nova página para buscar proventos
+            page_proventos = await context.new_page()
+
+            try:
+                await page_proventos.goto(
+                    url_proventos, wait_until="domcontentloaded", timeout=15000
+                )
+
+                # Aguarda a tabela carregar
+                try:
+                    await page_proventos.wait_for_selector(
+                        'table[id="resultado"]', timeout=5000
+                    )
+                except PlaywrightError:
+                    # Se não encontrar a tabela, pode ser que não tenha proventos
+                    return None
+
+                # Extrai os dados da tabela usando JavaScript
+                proventos = await page_proventos.evaluate("""
+                    () => {
+                        const rows = document.querySelectorAll('#resultado tr');
+                        const result = [];
+
+                        // Pula o cabeçalho (primeira linha)
+                        for (let i = 1; i < Math.min(rows.length, 3); i++) {
+                            const cols = rows[i].querySelectorAll('td');
+                            if (cols.length >= 4) {
+                                const valor = cols[3].textContent.trim().replace(',', '.');
+                                result.push({
+                                    competencia: cols[0].textContent.trim(),
+                                    dataPagamento: cols[2].textContent.trim(),
+                                    valor: parseFloat(valor)
+                                });
+                            }
+                        }
+                        return result;
+                    }
+                """)
+
+                if proventos and len(proventos) > 0:
+                    return proventos[0]
+
+                return None
+
+            finally:
+                await page_proventos.close()
+
+        except Exception as e:
+            print(f"Erro ao buscar proventos para {ticker}: {e}")
+            return None
 
     async def _buscar_detalhes_da_lista(
         self, context: BrowserContext, tickers: List[str], max_concorrentes: int = 3
@@ -338,6 +467,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
         """
         historico_processado = []
         data_corte = self.calcular_data_corte(periodo)
+
         for item in dados_brutos:
             if not isinstance(item, list) or len(item) != 2:
                 continue
@@ -367,6 +497,30 @@ class FundamentusHeadlinesScraper(NewsScraper):
         # ORDENA POR TIMESTAMP (mais recente primeiro)
         historico_processado.sort(key=lambda x: x["timestamp"], reverse=sortOrder)
         return historico_processado
+
+    def _is_fii(self, dados: dict) -> bool:
+        """
+        Identifica se o ativo é FII baseado nos dados retornados.
+        """
+        # Opção 1: Verifica se tem o campo "FII" (vindo do Fundamentus)
+        if dados.get("FII"):
+            return True
+
+        # Opção 2: Verifica se o ticker termina com 11 (padrão FII)
+        ticker = dados.get("ticker", "") or dados.get("Papel", "")
+        if ticker and ticker.upper().endswith("11"):
+            return True
+
+        # Opção 3: Verifica se tem campos específicos de FII
+        if dados.get("Segmento") in [
+            "Shopping",
+            "Logística",
+            "Lajes Corporativas",
+            "Educacional",
+        ]:
+            return True
+
+        return False
 
     def _parse_list_html(self, html: str):
         resultados = []
@@ -409,6 +563,30 @@ class FundamentusHeadlinesScraper(NewsScraper):
 
                         resultados.append(dados)
         return resultados
+
+    def _parse_proventos_html(self, html: str):
+        dados = []
+        soup = BeautifulSoup(html, "html.parser")
+        tabelas = soup.find_all("table", id="resultado")
+        if len(tabelas) == 0:
+            raise HTTPException(
+                404, f"Provento do ticker não encontrado no Fundamentus"
+            )
+        for tabela in tabelas:
+            linhas = tabela.find_all("tr")
+            for linha in linhas:
+                colunas = linha.find_all("td")
+                if len(colunas) >= 4:
+                    competencia = colunas[0].text.strip()
+                    pagamento = colunas[2].text.strip()
+                    valor = colunas[3].text.strip()
+                    resultado = {
+                        "Competencia": competencia,
+                        "DataPagamento": pagamento,
+                        "ValorProvento": valor,
+                    }
+                    dados.append(resultado)
+        return dados[0] if dados else None
 
     def _parse_html(self, html: str):
         dados = {}

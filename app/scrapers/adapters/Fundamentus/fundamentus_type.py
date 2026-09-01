@@ -276,6 +276,7 @@ def build_asset(source: dict[str, Any]) -> dict[str, Any]:
         "symbol": (papel or "").upper() or None,
         "name": source.get("Nome") if sub_type == "fii" else source.get("Empresa"),
         "assetType": infer_asset_type(sub_type),
+        "provento": source.get("proventos"),
         "subType": sub_type,
         "currency": "BRL",
         "active": True,
@@ -291,39 +292,6 @@ def build_asset(source: dict[str, Any]) -> dict[str, Any]:
         "fundamentals": build_fundamentals(source, sub_type),
         "variacaoDia": parse_br_percent_fraction(source.get("Dia")),
         "meta": build_meta(source, sub_type),
-    }
-
-
-def build_asset_list(source: dict[str, Any]) -> dict[str, Any]:
-    """Converte um dict bruto (retorno da sua API/scraper) para o objeto 'asset' normalizado."""
-    return {
-        "symbol": source.get("ticker"),
-        "name": source.get("nome"),
-        # "assetType": infer_asset_type(sub_type),
-        # "subType": sub_type,
-        # "currency": "BRL",
-        # "active": True,
-        # "exchange": "B3",
-        # "sector": source.get("Segmento") if sub_type == "fii" else source.get("Setor"),
-        # "logoUrl": None,
-        # "quote": {
-        #     "lastPrice": parse_br_float(source.get("Cotação")),
-        #     "changePercent": parse_br_percent(source.get("Dia")),
-        #     "volume": parse_br_float(source.get("Vol $ méd (2m)")),
-        #     "marketCap": parse_br_float(source.get("Valor de mercado")),
-        # },
-        # "fundamentals": build_fundamentals(source, sub_type),
-        # "variacaoDia": parse_br_percent_fraction(source.get("Dia")),
-        # "meta": build_meta(source, sub_type),
-    }
-
-
-async def build_list_response(sources_list: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "requestedAt": datetime.now(timezone.utc)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
-        "results": [build_asset_list(src) for src in sources_list],
     }
 
 

@@ -105,7 +105,7 @@ app = FastAPI(
         "API para coleta de notícias com Playwright " "e cache com retry em background."
     ),
     lifespan=lifespan,
-    dependencies=[Depends(verify_api_key)],  # protege TODAS as rotas
+    # dependencies=[Depends(verify_api_key)],  # protege TODAS as rotas
 )
 # ============================================================
 # FUNÇÃO PARA VERIFICAR CACHE
@@ -220,7 +220,7 @@ async def background_refresh(
                 async with scrape_semaphore:
                     # async with browser_manager.scrape_session() as (page, context):
                     #     items = await scraper.scrape(context, limit)
-                    await browser_manager.start(useProxy=True)
+                    await browser_manager.start()
                     if browser_manager.context is None:
                         raise ScraperError("Contexto Playwright não foi criado")
                     logger.info(
@@ -437,7 +437,7 @@ async def teste():
     #     raise
     page = None
     try:
-        await browser_manager.start(useProxy=True)
+        await browser_manager.start()
 
         if browser_manager.context is None:
             raise ScraperError("Contexto Playwright não foi criado")
@@ -612,7 +612,7 @@ async def news(
 
         try:
 
-            await browser_manager.start(useProxy=True)
+            await browser_manager.start()
 
             if browser_manager.context is None:
                 raise ScraperError("Contexto Playwright não foi criado")
@@ -796,7 +796,7 @@ async def fundamentus(
     source_key = source.lower()
     scraper = SCRAPERS.get(source_key)
 
-    await browser_manager.start(useProxy=True)
+    await browser_manager.start()
     if browser_manager.context is None:
         raise ScraperError("Contexto Playwright não foi criado")
     dados = await scraper.search(browser_manager.context, ticker.upper())
@@ -817,13 +817,13 @@ async def fundamentus(
         "PETR4", min_length=1, description="Código do ativo (ex: PETR4, VALE3)"
     ),
     range: str = Query(
-        "1m0",
+        "1mo",
         min_length=1,
         max_length=10,
         description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
     ),
     interval: str = Query(
-        "1m0",
+        "1mo",
         min_length=1,
         max_length=10,
         description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
@@ -844,7 +844,7 @@ async def fundamentus(
     order_map = {"asc": False, "desc": True}
     is_descending = order_map.get(order.lower(), False)
 
-    await browser_manager.start(useProxy=True)
+    await browser_manager.start()
     if browser_manager.context is None:
         raise ScraperError("Contexto Playwright não foi criado")
     dados = await scraper.scrape(
