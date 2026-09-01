@@ -105,7 +105,7 @@ app = FastAPI(
         "API para coleta de notícias com Playwright " "e cache com retry em background."
     ),
     lifespan=lifespan,
-    # dependencies=[Depends(verify_api_key)],  # protege TODAS as rotas
+    dependencies=[Depends(verify_api_key)],
 )
 # ============================================================
 # FUNÇÃO PARA VERIFICAR CACHE
