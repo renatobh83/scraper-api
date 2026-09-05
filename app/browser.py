@@ -101,8 +101,8 @@ class BrowserManager:
         """
         await self._ensure_playwright()
 
-        browser: Browser = await self._playwright.chromium.launch(
-            headless=not self.debug,
+        browser: Browser = await self._playwright.webkit.launch(
+            headless=False,#not self.debug,
             slow_mo=150 if self.debug else 0,
             proxy=self.proxy,
             args=[
@@ -136,7 +136,7 @@ class BrowserManager:
                 });
                 """)
             await context.route("**/*", self._handle_route)
-
+            await context.route("**/*.{png,jpg,jpeg,css,woff,woff2}", lambda route: route.abort())
             page: Page = await context.new_page()
             page.set_default_timeout(settings.selector_timeout_ms)
             page.set_default_navigation_timeout(settings.navigation_timeout_ms)

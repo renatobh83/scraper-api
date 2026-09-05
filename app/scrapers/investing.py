@@ -22,6 +22,9 @@ class InvestingHeadlinesScraper(NewsScraper):
     source_name = "investing"
     page_url = "https://br.investing.com/news/headlines"
 
+    async def httpx():
+        pass
+
     async def scrape(
         self,
         context: BrowserContext,
