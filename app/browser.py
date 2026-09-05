@@ -102,7 +102,7 @@ class BrowserManager:
         await self._ensure_playwright()
 
         browser: Browser = await self._playwright.webkit.launch(
-            headless=False,#not self.debug,
+            headless=not self.debug,
             slow_mo=150 if self.debug else 0,
             proxy=self.proxy,
             args=[
