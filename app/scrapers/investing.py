@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from urllib.parse import urljoin
-
+import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 from playwright_stealth import Stealth
@@ -21,6 +21,52 @@ SELECTOR_WAIT_TIMEOUT_MS = 3000
 class InvestingHeadlinesScraper(NewsScraper):
     source_name = "investing"
     page_url = "https://br.investing.com/news/headlines"
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
+        # ...
+    ]
+
+    def get_random_ua(self):
+        import random
+
+        return random.choice(self.user_agents)
+
+    async def get_news_http(self, limit: int):
+
+        try:
+            proxy_url = os.getenv("PROXY_URL")
+            with httpx.Client(
+                proxy=proxy_url,
+                verify=False,
+                base_url=self.page_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Cache-Control": "max-age=0",
+                    "User-Agent": self.get_random_ua(),
+                },
+                follow_redirects=True,
+                timeout=10.0,
+            ) as client:
+                r = client.get(self.page_url)
+                r.raise_for_status()
+                print(r)
+        except httpx.HTTPError as e:
+            print(f"Erro HTTP ao buscar noticias : {e}")
+            return None
+        except Exception as e:
+            print(f"Erro HTTP ao buscar noticias: {e}")
+            return None
 
     async def scrape(
         self,

@@ -74,7 +74,7 @@ class BrowserManager:
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/121.0.0.0 Safari/537.36"
+                    "Chrome/152.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
@@ -123,7 +123,7 @@ class BrowserManager:
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/121.0.0.0 Safari/537.36"
+                    "Chrome/152.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
@@ -189,20 +189,42 @@ class BrowserManager:
 
     async def close(self) -> None:
         """Encerra o driver do Playwright (chamar no shutdown da app)."""
-        # if self._playwright is not None:
-        #     await self._playwright.stop()
-        #     self._playwright = None
+        # Fecha o contexto primeiro
         if self.context is not None:
-            await self.context.close()
-            self.context = None
+            try:
+                await self.context.close()
+            except Exception as e:
+                # Ignora erros de conexão durante shutdown
+                if "closed" in str(e).lower() or "connection" in str(e).lower():
+                    print(f"Contexto já estava fechado: {e}")
+                else:
+                    print(f"Erro ao fechar contexto: {e}")
+            finally:
+                self.context = None
 
+        # Depois fecha o browser
         if self.browser is not None:
-            await self.browser.close()
-            self.browser = None
+            try:
+                await self.browser.close()
+            except Exception as e:
+                if "closed" in str(e).lower() or "connection" in str(e).lower():
+                    print(f"Browser já estava fechado: {e}")
+                else:
+                    print(f"Erro ao fechar browser: {e}")
+            finally:
+                self.browser = None
 
+        # Por último, para o Playwright
         if self._playwright is not None:
-            await self._playwright.stop()
-            self._playwright = None
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                if "closed" in str(e).lower() or "connection" in str(e).lower():
+                    print(f"Playwright já estava parado: {e}")
+                else:
+                    print(f"Erro ao parar Playwright: {e}")
+            finally:
+                self._playwright = None
 
     async def _handle_route(self, route) -> None:
         request_url = route.request.url

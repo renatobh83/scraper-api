@@ -3,6 +3,7 @@ import os
 import json
 import re
 from datetime import datetime
+from tkinter import E
 from typing import List, Dict, Any
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 from fastapi import HTTPException
@@ -14,7 +15,7 @@ from calendar import monthrange
 from app.scrapers.adapters.Fundamentus.fundamentus_type import (
     build_response,
 )
-
+import httpx
 from typing import Any, Optional
 
 
@@ -24,6 +25,243 @@ class FundamentusHeadlinesScraper(NewsScraper):
     baseUrl = "https://www.fundamentus.com.br/detalhes.php?papel="
     historico = "https://www.fundamentus.com.br/amline/cot_hist.php?papel="
     proventos = "https://www.fundamentus.com.br/fii_proventos.php?papel="
+
+    async def searchFundamentusHttpx(self, ticker: str):
+        if not ticker:
+            raise HTTPException(
+                status_code=503,
+                detail=("O Ticker deve ser informado."),
+            )
+        url_detalhes = f"{self.baseUrl}{ticker}"
+        proxy_url = os.getenv("PROXY_URL")
+        try:
+            with httpx.Client(
+                proxy=proxy_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br, zstd",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+                },
+                timeout=10.0,
+            ) as client:
+                r = client.get(url_detalhes)
+                r.raise_for_status()
+
+                soup = BeautifulSoup(r.text, "html.parser")
+                # Equivalente a: await page.query_selector('table[class="w728"]')
+                has_detalhes = soup.select_one("table.w728")
+
+                # Equivalente a: await page.query_selector('table[id="test1"]')
+                has_lista = soup.select_one("table#test1")
+                if has_detalhes:
+                    dados_detalhes = self._parse_html(r.text)
+                    if self._is_fii(dados_detalhes):
+                        proventos = await self._proventosHttpx(client, ticker)
+                        if proventos:
+                            dados_detalhes["proventos"] = proventos
+                        else:
+                            dados_detalhes["proventos"] = None
+                        pass
+                    else:
+                        dados_detalhes["proventos"] = None
+
+                    return build_response([dados_detalhes])
+                if has_lista:
+                    # Aqui você precisa de um método diferente para parsear a lista
+                    dados_lista = self._parse_list_html(r.text)  # <- await que faltava
+                    resultados_filtrados = [
+                        item
+                        for item in dados_lista
+                        if (
+                            ticker.lower() in item.get("ticker", "").lower()
+                            or ticker.lower() in item.get("nome", "").lower()
+                            or ticker.lower() in item.get("razao_social", "").lower()
+                        )
+                    ]
+                    # Ordena: primeiro os que começam com o termo, depois os que contêm
+                    resultados_filtrados.sort(
+                        key=lambda x: (
+                            (
+                                0
+                                if x.get("ticker", "")
+                                .lower()
+                                .startswith(ticker.lower())
+                                else 1
+                            ),
+                            x.get("ticker", "").lower(),
+                        )
+                    )
+                    tickers_encontrados = [
+                        item["ticker"] for item in resultados_filtrados
+                    ]
+
+                    detalhes_completos = await self._buscar_detalhes_da_lista_httpx(
+                        client, tickers_encontrados
+                    )
+                    # 🔥 PARA CADA FII NA LISTA, BUSCA PROVENTOS
+                    for i, item in enumerate(detalhes_completos):
+                        if self._is_fii(item):
+                            proventos = await self._proventosHttpx(
+                                client, item.get("ticker")
+                            )
+                            if proventos:
+                                detalhes_completos[i]["proventos"] = proventos
+                            else:
+                                detalhes_completos[i]["proventos"] = None
+                        else:
+                            detalhes_completos[i]["proventos"] = None
+                    return build_response(detalhes_completos)
+        except:
+            raise
+
+    async def historicalFundamentusHttpx(
+        self,
+        ticker: str,
+        interval: str,
+        order: bool,
+    ):
+        if not ticker:
+            raise HTTPException(
+                status_code=503,
+                detail=("O Ticker deve ser informado."),
+            )
+        url_historico_api = f"{self.historico}{ticker}"
+        proxy_url = os.getenv("PROXY_URL")
+        try:
+            with httpx.Client(
+                proxy=proxy_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br, zstd",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+                    "Referer": f"https://www.fundamentus.com.br/detalhes.php?papel={ticker}",
+                },
+                timeout=10.0,
+            ) as client:
+                r = client.get(url_historico_api)
+                r.raise_for_status()
+                html = r.text
+                limpo = html.replace("\n", "").replace(" ", "")
+                while ",," in limpo:
+                    limpo = limpo.replace(",,", ",")
+                limpo = limpo.replace("[,", "[").replace(",]", "]")
+                dados = json.loads(limpo)
+                historico = self.processar_historico_fundamentus(
+                    dados, periodo=interval, sortOrder=order
+                )
+
+                retorno = {
+                    "requestedSymbol": ticker,
+                    "symbol": ticker,
+                    "results": [
+                        {
+                            "data": {
+                                "usedInterval": "1d",
+                                "usedRange": "1mo",
+                                "historicalDataPrice": historico,
+                            }
+                        }
+                    ],
+                }
+                return retorno
+        except httpx.HTTPError as e:
+            print(f"Erro HTTP ao buscar proventos para {ticker}: {e}")
+            return None
+        except Exception as e:
+            print(f"Erro ao buscar proventos para {ticker}: {e}")
+            return None
+
+    async def _proventosHttpx(self, client: httpx.AsyncClient, ticker: str):
+        url_proventos = f"{self.proventos}{ticker}&tipo=2"
+        try:
+            response = client.get(
+                url_proventos,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br, zstd",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+                },
+            )
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # # A tabela de proventos tem id="resultado"
+            tabela = soup.find("table", id="resultado")
+            if tabela is None:
+                # Pode ser que o ticker não seja FII ou não tenha proventos
+                return None
+            # Pega as linhas, pulando o cabeçalho (primeira <tr>)
+            linhas = tabela.find_all("tr")[1:3]  # equivale ao Math.min(rows.length, 3)
+
+            for linha in linhas:
+                cols = linha.find_all("td")
+                if len(cols) < 4:
+                    continue
+
+                # Mesma lógica do JS: valor na coluna 3, troca vírgula por ponto
+                valor_str = (
+                    cols[3].get_text(strip=True).replace(".", "").replace(",", ".")
+                )
+
+                try:
+                    valor = float(valor_str)
+                except ValueError:
+                    continue
+
+                return {
+                    "competencia": cols[0].get_text(strip=True),
+                    "dataPagamento": cols[2].get_text(strip=True),
+                    "valor": valor,
+                }
+
+            return None
+        except httpx.HTTPError as e:
+            print(f"Erro HTTP ao buscar proventos para {ticker}: {e}")
+            return None
+        except Exception as e:
+            print(f"Erro ao buscar proventos para {ticker}: {e}")
+            return None
+
+    async def _fetch_detalhes_httpx(
+        self, client: httpx.AsyncClient, ticker: str
+    ) -> Dict[str, Any]:
+        url_detalhes = f"{self.baseUrl}{ticker}"
+        try:
+            response = client.get(url_detalhes)
+            response.raise_for_status()
+            html = response.text
+            return self._parse_html(html)
+        except:
+            raise
+
+    async def _buscar_detalhes_da_lista_httpx(
+        self, client: httpx.AsyncClient, tickers: List[str], max_concorrentes: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Para cada ticker encontrado na tabela de lista, busca os dados completos
+        (página de detalhes), com um limite de concorrência para não sobrecarregar
+        o Fundamentus nem seu proxy.
+        """
+        semaforo = asyncio.Semaphore(max_concorrentes)
+        resultados: List[Dict[str, Any]] = []
+
+        async def _buscar_um(tk: str):
+            async with semaforo:
+                try:
+                    dados = await self._fetch_detalhes_httpx(client, tk)
+                    resultados.append(dados)
+                except httpx.HTTPError as e:
+                    print(f"Falha ao buscar detalhes de {tk}: {E}")
+                    return None
+                except Exception as e:
+                    print(f"Falha ao buscar detalhes de {tk}: {e}")
+                    return None
+
+        await asyncio.gather(*(_buscar_um(tk) for tk in tickers))
+        return resultados
 
     async def search(
         self,
@@ -38,32 +276,6 @@ class FundamentusHeadlinesScraper(NewsScraper):
 
         page = await self._openPage(context)
         try:
-
-            # url_historico_proventos = f"{self.proventos}{ticker}&tipo=2"
-
-            # response_detalhes = await page.goto(
-            #     url_historico_proventos,
-            #     wait_until="domcontentloaded",
-            #     timeout=15000,
-            # )
-            # if os.getenv("DEBUG_PAUSE", "0") == "1":
-            #     await page.pause()
-            # status = response_detalhes.status if response_detalhes else None
-            # if status is not None and status >= 400:
-            #     title = await page.title()
-            #     raise ScraperError(
-            #         f"Fundamentus respondeu HTTP {status} mesmo com Playwright "
-            #         f"(url={page.url}, title={title!r})."
-            #     )
-            # try:
-            #     await page.wait_for_selector('table[id="resultado]', timeout=5000)
-
-            # except PlaywrightError:
-            #     # Alguns layouts podem renderizar cards sem o atributo esperado.
-            #     # O HTML ainda será analisado pelos seletores de fallback.
-            #     pass
-            # html = await page.content()
-            # proventos = self._parse_proventos_html(html)
             url_detalhes = f"{self.baseUrl}{ticker}"
 
             response_detalhes = await page.goto(
@@ -457,13 +669,13 @@ class FundamentusHeadlinesScraper(NewsScraper):
         sortOrder: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Processa os dados históricos do Fundamentus e ordena por data (mais recente primeiro)
+        Processa os dados históricos do Fundamentus
 
         Args:
             dados_brutos: Lista de pares [timestamp_ms, valor]
 
         Returns:
-            Lista de dicionários com data e valor formatados, ordenados do mais recente para o mais antigo
+            Lista de dicionários com data e valor formatados
         """
         historico_processado = []
         data_corte = self.calcular_data_corte(periodo)
@@ -471,7 +683,6 @@ class FundamentusHeadlinesScraper(NewsScraper):
         for item in dados_brutos:
             if not isinstance(item, list) or len(item) != 2:
                 continue
-
             timestamp_ms = item[0]
             valor = item[1]
 
