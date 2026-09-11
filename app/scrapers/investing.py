@@ -68,6 +68,9 @@ class InvestingHeadlinesScraper(NewsScraper):
             print(f"Erro HTTP ao buscar noticias: {e}")
             return None
 
+    async def httpx():
+        pass
+
     async def scrape(
         self,
         context: BrowserContext,
