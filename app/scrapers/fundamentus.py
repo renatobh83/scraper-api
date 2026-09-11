@@ -3,7 +3,6 @@ import os
 import json
 import re
 from datetime import datetime
-from tkinter import E
 from typing import List, Dict, Any
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 from fastapi import HTTPException
@@ -254,7 +253,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
                     dados = await self._fetch_detalhes_httpx(client, tk)
                     resultados.append(dados)
                 except httpx.HTTPError as e:
-                    print(f"Falha ao buscar detalhes de {tk}: {E}")
+                    print(f"Falha ao buscar detalhes de {tk}: {e}")
                     return None
                 except Exception as e:
                     print(f"Falha ao buscar detalhes de {tk}: {e}")
