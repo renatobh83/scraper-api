@@ -9,8 +9,8 @@ from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 from playwright_stealth import Stealth
 from app.config import settings
-from app.human_behavior import human_scroll, jitter
-from app.models import NewsItem
+from app.utils.human_behavior import human_scroll, jitter
+from app.utils.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
 
 logger = logging.getLogger(__name__)
@@ -84,24 +84,6 @@ class InvestingHeadlinesScraper(NewsScraper):
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
 
         try:
-            # page.on(
-            #     "request",
-            #     lambda request: print(
-            #         "REQ:",
-            #         request.method,
-            #         request.url[:200],
-            #     ),
-            # )
-
-            # page.on(
-            #     "response",
-            #     lambda response: print(
-            #         "RESP:",
-            #         response.status,
-            #         response.url[:200],
-            #     ),
-            # )
-
             response = await page.goto(
                 self.page_url,
                 wait_until="commit",
@@ -124,8 +106,6 @@ class InvestingHeadlinesScraper(NewsScraper):
                 700,
             )
             print("STATUS:", response.status if response else None)
-            print("URL:", page.url)
-            print("TITLE:", await page.title())
             status = response.status if response else None
             if status is not None and status >= 400:
                 title = await page.title()
@@ -164,11 +144,6 @@ class InvestingHeadlinesScraper(NewsScraper):
             html = await page.content()
             items = self._parse_html(html, limit)
             if not items:
-                body_text = " ".join((await page.locator("body").inner_text()).split())[
-                    :300
-                ]
-                # await self._save_debug_artifacts(page, "no_news")
-
                 raise ScraperError(
                     "Nenhuma notícia encontrada no HTML renderizado da Investing. "
                     "Verifique os logs do container para o diagnóstico."
@@ -218,9 +193,6 @@ class InvestingHeadlinesScraper(NewsScraper):
         seen_urls: set[str] = set()
 
         # Estrutura observada no DOM compartilhado pelo usuário:
-        # div[data-test="breaking-news"]
-        #   div[data-test="breaking-news-article"]
-        #     a[href="/news/..."]
         breaking_news = soup.select_one('div[data-test="breaking-news"]')
         if breaking_news:
             cards = breaking_news.select('div[data-test="breaking-news-article"]')

@@ -3,13 +3,13 @@ import http
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from app.security import verify_api_key
+from app.utils.security import verify_api_key
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 
 
 from app.browser import BrowserManager
 from app.config import settings
-from app.models import HealthResponse, NewsResponse
+from app.utils.models import HealthResponse, NewsResponse
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 

@@ -3,7 +3,7 @@ from collections.abc import Sequence
 
 from playwright.async_api import BrowserContext
 
-from app.models import NewsItem
+from app.utils.models import NewsItem
 
 
 class ScraperError(RuntimeError):
