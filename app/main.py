@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from app.utils.security import verify_api_key
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from typing import Annotated
 
 
 from app.browser import BrowserManager
@@ -424,77 +425,42 @@ from bs4 import BeautifulSoup
 
 
 @app.get("/teste")
-async def teste():
-    # try:
-    #     async with browser_manager.scrape_session() as (page, context):
-    #         print("ANTES IP")
-    #         response = await page.goto(
-    #             "https://api.ipify.org?format=json",
-    #             wait_until="domcontentloaded",
-    #             timeout=30000,
-    #         )
-    #         print("DEPOIS IP")
-    #         print("STATUS IP:", response.status if response else None)
-    #         print("BODY IP:", await page.text_content("body"))
-    #         return {"res"}
-    # except asyncio.CancelledError:
-    #     raise
-    # except ScraperError as exc:
-    #     raise
-    page = None
-    proxies = {
-        "http://": "http://proxierenato:renatoproxie2019@152.67.48.199:42827",
-        "https://": "http://proxierenato:renatoproxie2019@152.67.48.199:42827",
-    }
-
-    url = "https://httpbin.org/ip"
-    fund = "https://www.fundamentus.com.br/detalhes.php?papel=petr4"
-    try:
-        with httpx.Client(
-            # proxy="http://proxierenato:renatoproxie2019@152.67.48.199:42827",
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br, zstd",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+async def teste(
+   source: Annotated[str, Query(min_length=1, max_length=30)] = "mercadolivre",
+   link: Annotated[str, Query(min_length=1, description="Link obrigatório")] = "None"
+):
+    source_key = source.lower()
+    print(source_key)
+    scraper = SCRAPERS.get(source_key)
+    if scraper is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Fonte não cadastrada",
+                "available_sources": sorted(SCRAPERS),
             },
-            timeout=10.0,
-        ) as client:
-            r = client.get(fund)
-            r.raise_for_status()
-            html = r.text
-            soup = BeautifulSoup(html, "html.parser")
-            print("Título:", soup.title.string)
-            for i, tabela in enumerate(soup.find_all("table")):
-                print(f"\n--- Tabela {i} ---")
-                for linha in tabela.find_all("tr"):
-                    celulas = [
-                        c.get_text(strip=True) for c in linha.find_all(["td", "th"])
-                    ]
-                    if celulas:
-                        print(celulas)
-        # await browser_manager.start()
-        # response =
-        # if browser_manager.context is None:
-        #     raise ScraperError("Contexto Playwright não foi criado")
-        # page = await browser_manager.new_page()
-        # response = await page.goto(
-        #     "https://api.ipify.org?format=json",
-        #     wait_until="domcontentloaded",
-        #     timeout=30000,
-        # )
-
-        # print("DEPOIS IP")
-        # print("STATUS IP:", response.status if response else None)
-        # print("BODY IP:", await page.text_content("body"))
+        )
+    if link is None:
+            raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Link obrigatório"
+            },
+        )
+    try:
+        await browser_manager.start(useProxy=False)
+        if browser_manager.context is None:
+            raise ScraperError("Contexto Playwright não foi criado")
+        dados = await scraper.scrape(browser_manager.context, link)
+        
         return {"res"}
     except asyncio.CancelledError:
         raise
     except ScraperError as exc:
         raise
-    finally:
-        if page:
-            await page.close()
+    # finally:
+        # if page:
+        #     await page.close()
 
 
 # ============================================================

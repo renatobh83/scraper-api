@@ -20,3 +20,14 @@ class NewsScraper(ABC):
         limit: int,
     ) -> Sequence[NewsItem]:
         raise NotImplementedError
+
+class MlScraper(ABC):
+    source_name: str
+
+    @abstractmethod
+    async def scrape(
+        self,
+        context: BrowserContext,
+        limit: int,
+    ) -> Sequence[NewsItem]:
+        raise NotImplementedError
