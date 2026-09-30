@@ -426,8 +426,11 @@ from bs4 import BeautifulSoup
 
 @app.get("/teste")
 async def teste(
-   source: Annotated[str, Query(min_length=1, max_length=30)] = "mercadolivre",
-   link: Annotated[str, Query(min_length=1, description="Link obrigatório")] = "None"
+    source: Annotated[str, Query(min_length=1, max_length=30)] = "statusinvest",
+    ticker: str = Query(
+        "PETR4",
+        min_length=1,
+    ),
 ):
     source_key = source.lower()
     print(source_key)
@@ -440,27 +443,21 @@ async def teste(
                 "available_sources": sorted(SCRAPERS),
             },
         )
-    if link is None:
-            raise HTTPException(
-            status_code=404,
-            detail={
-                "message": "Link obrigatório"
-            },
-        )
     try:
         await browser_manager.start(useProxy=False)
         if browser_manager.context is None:
             raise ScraperError("Contexto Playwright não foi criado")
-        dados = await scraper.scrape(browser_manager.context, link)
-        
-        return {"res"}
+
+        dados = await scraper.scrape(browser_manager.context, ticker)
+
+        return {dados}
     except asyncio.CancelledError:
         raise
     except ScraperError as exc:
         raise
     # finally:
-        # if page:
-        #     await page.close()
+    # if page:
+    #     await page.close()
 
 
 # ============================================================
@@ -808,7 +805,7 @@ async def fundamentus(
 
 
 @app.get("/tickers/historical")
-async def fundamentus(
+async def fundamentusHistorical(
     source: str = Query(
         "fundamentus",
         min_length=1,
