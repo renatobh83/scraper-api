@@ -115,7 +115,7 @@ class BrowserManager:
             playwright = await async_playwright().start()
 
             browser = await playwright.chromium.launch(
-                headless=False,
+                headless=True,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if use_proxy and self.proxy else None,
                 args=[

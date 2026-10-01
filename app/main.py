@@ -449,7 +449,7 @@ async def teste(
     ),
 ):
     source_key = source.lower()
-    print(source_key)
+
     scraper = SCRAPERS.get(source_key)
     if scraper is None:
         raise HTTPException(
