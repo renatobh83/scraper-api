@@ -221,20 +221,25 @@ async def background_refresh(
             try:
 
                 async with scrape_semaphore:
-                    # async with browser_manager.scrape_session() as (page, context):
-                    #     items = await scraper.scrape(context, limit)
-                    await browser_manager.start()
-                    if browser_manager.context is None:
-                        raise ScraperError("Contexto Playwright não foi criado")
-                    logger.info(
-                        "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
-                        source_key,
-                        attempt,
-                    )
-                    items = await scraper.scrape(
-                        browser_manager.context,
-                        limit,
-                    )
+                    async with browser_manager.scrape_session() as context:
+                        items = await scraper.scrape(
+                            context,
+                            limit,
+                        )
+                #     # async with browser_manager.scrape_session() as (page, context):
+                #     #     items = await scraper.scrape(context, limit)
+                #     await browser_manager.start()
+                #     if browser_manager.context is None:
+                #         raise ScraperError("Contexto Playwright não foi criado")
+                #     logger.info(
+                #         "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
+                #         source_key,
+                #         attempt,
+                #     )
+                #     items = await scraper.scrape(
+                #         browser_manager.context,
+                #         limit,
+                #     )
 
                 # --------------------------------------------------
                 # Resultado válido
@@ -300,11 +305,21 @@ async def background_refresh(
                 # --------------------------------------------------
 
                 if is_block_error(exc):
+                    cooldown = settings.blocked_cooldown_seconds
 
                     blocked_until[cache_key] = (
-                        asyncio.get_running_loop().time()
-                        + settings.blocked_cooldown_seconds
+                        asyncio.get_running_loop().time() + cooldown
                     )
+
+                    logger.warning(
+                        "[NEWS] Bloqueio detectado. "
+                        "Não haverá novas tentativas imediatas. "
+                        "Cooldown=%ss source=%s",
+                        cooldown,
+                        source_key,
+                    )
+
+                    break
 
                 # --------------------------------------------------
                 # Se ainda houver tempo, espera antes da próxima.
@@ -518,6 +533,24 @@ async def news(
     # ========================================================
 
     if cached is not None and not is_fresh:
+        now = asyncio.get_running_loop().time()
+
+        cooldown_end = blocked_until.get(
+            cache_key,
+            0.0,
+        )
+
+        if now < cooldown_end:
+            remaining = int(cooldown_end - now) + 1
+
+            logger.info(
+                "[NEWS] Cache stale, mas fonte está em cooldown: "
+                "source=%s restante=%ss",
+                source_key,
+                remaining,
+            )
+
+            return cached.model_copy(update={"stale": True})
 
         logger.info(
             "[NEWS] CACHE STALE: source=%s limit=%s",
@@ -525,19 +558,11 @@ async def news(
             limit,
         )
 
-        # ----------------------------------------------------
-        # Agenda atualização sem bloquear usuário
-        # ----------------------------------------------------
-
         start_background_refresh(
             cache_key=cache_key,
             scraper=scraper,
             limit=limit,
         )
-
-        # ----------------------------------------------------
-        # Retorna imediatamente o cache antigo
-        # ----------------------------------------------------
 
         return cached.model_copy(update={"stale": True})
 

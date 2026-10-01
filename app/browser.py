@@ -1,11 +1,14 @@
 import asyncio
 import os
+import logging
 from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlsplit, urlunsplit
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserManager:
@@ -53,7 +56,7 @@ class BrowserManager:
 
             self._playwright = await async_playwright().start()
             self.browser = await self._playwright.chromium.launch(
-                headless=False,
+                headless=True,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
                 args=[
@@ -89,64 +92,163 @@ class BrowserManager:
             await self.context.route("**/*", self._handle_route)
 
     @asynccontextmanager
-    async def scrape_session(self):
+    async def scrape_session(
+        self,
+        use_proxy: bool = True,
+    ):
         """
-        Abre um browser + context + page isolados para UMA operação de scrape
-        e fecha tudo ao sair do bloco. Cada chamada usa seu próprio browser
-        (garante IP/túnel novo no proxy) sem interferir em scrapes concorrentes.
+        Cria uma sessão Playwright completamente isolada.
 
-        Uso:
-            async with browser_manager.scrape_session() as (page, context):
-                ...
+        Cada chamada cria e encerra:
+        - uma instância do Playwright;
+        - um browser Chromium;
+        - um BrowserContext.
+
+        O scraper é responsável por criar e fechar as páginas.
         """
-        await self._ensure_playwright()
 
-        browser: Browser = await self._playwright.webkit.launch(
-            headless=False,
-            slow_mo=150 if self.debug else 0,
-            proxy=self.proxy,
-            args=[
-                "--disable-dev-shm-usage",
-                "--disable-extensions",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-backgrounding-occluded-windows",
-                "--disable-renderer-backgrounding",
-                "--disable-ipc-flooding-protection",
-            ],
-        )
+        playwright = None
+        browser = None
+        context = None
+
         try:
-            context: BrowserContext = await browser.new_context(
+            playwright = await async_playwright().start()
+
+            browser = await playwright.chromium.launch(
+                headless=False,
+                slow_mo=150 if self.debug else 0,
+                proxy=self.proxy if use_proxy and self.proxy else None,
+                args=[
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-ipc-flooding-protection",
+                ],
+            )
+
+            context = await browser.new_context(
                 locale="pt-BR",
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/152.0.0.0 Safari/537.36"
                 ),
-                viewport={"width": 1280, "height": 900},
+                viewport={
+                    "width": 1280,
+                    "height": 900,
+                },
                 accept_downloads=False,
                 java_script_enabled=True,
                 service_workers="block",
             )
+
             await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
+                Object.defineProperty(navigator, "webdriver", {
                     get: () => undefined
                 });
-                """)
-            await context.route("**/*", self._handle_route)
-            await context.route("**/*.{png,jpg,jpeg,css,woff,woff2}", lambda route: route.abort())
-            page: Page = await context.new_page()
-            page.set_default_timeout(settings.selector_timeout_ms)
-            page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+            """)
 
-            try:
-                yield page, context
-            finally:
-                await context.close()
+            await context.route(
+                "**/*",
+                self._handle_route,
+            )
+
+            yield context
+
         finally:
-            await browser.close()
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception as exc:
+                    logger.warning(
+                        "[BROWSER] Erro ao fechar contexto: %s",
+                        exc,
+                    )
+
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception as exc:
+                    logger.warning(
+                        "[BROWSER] Erro ao fechar browser: %s",
+                        exc,
+                    )
+
+            if playwright is not None:
+                try:
+                    await playwright.stop()
+                except Exception as exc:
+                    logger.warning(
+                        "[BROWSER] Erro ao parar Playwright: %s",
+                        exc,
+                    )
+
+    # @asynccontextmanager
+    # async def scrape_session(self):
+    #     """
+    #     Abre um browser + context + page isolados para UMA operação de scrape
+    #     e fecha tudo ao sair do bloco. Cada chamada usa seu próprio browser
+    #     (garante IP/túnel novo no proxy) sem interferir em scrapes concorrentes.
+
+    #     Uso:
+    #         async with browser_manager.scrape_session() as (page, context):
+    #             ...
+    #     """
+    #     await self._ensure_playwright()
+
+    #     browser: Browser = await self._playwright.webkit.launch(
+    #         headless=False,
+    #         slow_mo=150 if self.debug else 0,
+    #         proxy=self.proxy,
+    #         args=[
+    #             "--disable-dev-shm-usage",
+    #             "--disable-extensions",
+    #             "--no-first-run",
+    #             "--no-default-browser-check",
+    #             "--disable-background-networking",
+    #             "--disable-background-timer-throttling",
+    #             "--disable-backgrounding-occluded-windows",
+    #             "--disable-renderer-backgrounding",
+    #             "--disable-ipc-flooding-protection",
+    #         ],
+    #     )
+    #     try:
+    #         context: BrowserContext = await browser.new_context(
+    #             locale="pt-BR",
+    #             user_agent=(
+    #                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    #                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+    #                 "Chrome/152.0.0.0 Safari/537.36"
+    #             ),
+    #             viewport={"width": 1280, "height": 900},
+    #             accept_downloads=False,
+    #             java_script_enabled=True,
+    #             service_workers="block",
+    #         )
+    #         await context.add_init_script("""
+    #             Object.defineProperty(navigator, 'webdriver', {
+    #                 get: () => undefined
+    #             });
+    #             """)
+    #         await context.route("**/*", self._handle_route)
+    #         await context.route(
+    #             "**/*.{png,jpg,jpeg,css,woff,woff2}", lambda route: route.abort()
+    #         )
+    #         page: Page = await context.new_page()
+    #         page.set_default_timeout(settings.selector_timeout_ms)
+    #         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+
+    #         try:
+    #             yield page, context
+    #         finally:
+    #             await context.close()
+    #     finally:
+    #         await browser.close()
 
     @staticmethod
     def _load_proxy() -> dict[str, str] | None:

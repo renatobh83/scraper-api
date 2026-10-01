@@ -77,7 +77,7 @@ class InvestingHeadlinesScraper(NewsScraper):
         limit: int,
     ) -> list[NewsItem]:
         page = await context.new_page()
-        print("Abrindo a pagina")
+        logger.info("[Investing] Abrindo pagina")
         stealth = Stealth()
         await stealth.apply_stealth_async(page)
         page.set_default_timeout(settings.selector_timeout_ms)
@@ -105,7 +105,8 @@ class InvestingHeadlinesScraper(NewsScraper):
                 250,
                 700,
             )
-            print("STATUS:", response.status if response else None)
+
+            logger.info("[Investing] STATUS: %s", response.status if response else None)
             status = response.status if response else None
             if status is not None and status >= 400:
                 title = await page.title()
@@ -157,6 +158,7 @@ class InvestingHeadlinesScraper(NewsScraper):
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
         finally:
+            logger.info("[Investing] Fechando pagina")
             await page.close()
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:
