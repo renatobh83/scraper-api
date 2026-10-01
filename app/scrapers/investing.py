@@ -121,7 +121,7 @@ class InvestingHeadlinesScraper(NewsScraper):
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
         finally:
-            logger.info("[Investing] Fechando pagina %s", context)
+            logger.info("[Investing] Fechando pagina")
             await page.close()
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:

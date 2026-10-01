@@ -423,16 +423,10 @@ async def health() -> HealthResponse:
 
 app.include_router(public_router)
 
+
 # ============================================================
 # TESTE
 # ============================================================
-import httpx
-
-import httpx
-
-from bs4 import BeautifulSoup
-
-
 @app.get("/teste")
 async def teste(
     source: Annotated[str, Query(min_length=1, max_length=30)] = "statusinvest",
@@ -661,48 +655,48 @@ async def news(
             # ------------------------------------------------
             # 403 / 407
             # ------------------------------------------------
+            print(exc)
+            # if is_block_error(exc):
 
-            if is_block_error(exc):
+            #     blocked_until[cache_key] = (
+            #         asyncio.get_running_loop().time()
+            #         + settings.blocked_cooldown_seconds
+            #     )
 
-                blocked_until[cache_key] = (
-                    asyncio.get_running_loop().time()
-                    + settings.blocked_cooldown_seconds
-                )
+            #     # --------------------------------------------
+            #     # Inicia recuperação em background
+            #     # --------------------------------------------
 
-                # --------------------------------------------
-                # Inicia recuperação em background
-                # --------------------------------------------
+            #     start_background_refresh(
+            #         cache_key=cache_key,
+            #         scraper=scraper,
+            #         limit=limit,
+            #     )
 
-                start_background_refresh(
-                    cache_key=cache_key,
-                    scraper=scraper,
-                    limit=limit,
-                )
+            #     # --------------------------------------------
+            #     # Se houver cache, devolve stale
+            #     # --------------------------------------------
 
-                # --------------------------------------------
-                # Se houver cache, devolve stale
-                # --------------------------------------------
+            #     cached, _ = get_cache(cache_key)
 
-                cached, _ = get_cache(cache_key)
+            #     if cached is not None:
 
-                if cached is not None:
+            #         return cached.model_copy(update={"stale": True})
 
-                    return cached.model_copy(update={"stale": True})
+            #     # --------------------------------------------
+            #     # Sem cache
+            #     # --------------------------------------------
 
-                # --------------------------------------------
-                # Sem cache
-                # --------------------------------------------
-
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "A fonte recusou temporariamente "
-                        "a consulta. Uma nova tentativa "
-                        "está sendo processada em background. "
-                        "Tente novamente em até 1 minuto."
-                    ),
-                    headers={"Retry-After": "60"},
-                )
+            #     raise HTTPException(
+            #         status_code=503,
+            #         detail=(
+            #             "A fonte recusou temporariamente "
+            #             "a consulta. Uma nova tentativa "
+            #             "está sendo processada em background. "
+            #             "Tente novamente em até 1 minuto."
+            #         ),
+            #         headers={"Retry-After": "60"},
+            #     )
 
             # ------------------------------------------------
             # Outro erro
