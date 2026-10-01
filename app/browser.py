@@ -358,8 +358,8 @@ class BrowserManager:
         )
 
     async def new_page(self):
-        logger.info("[Browser] New page")
-        await self.restart()
+        if self.context is None:
+            raise RuntimeError("Contexto Playwright não foi criado")
         page = await self.context.new_page()
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
