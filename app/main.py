@@ -637,22 +637,25 @@ async def news(
 
         try:
 
-            await browser_manager.start()
+            # await browser_manager.start()
 
-            if browser_manager.context is None:
-                raise ScraperError("Contexto Playwright não foi criado")
+            # if browser_manager.context is None:
+            #     raise ScraperError("Contexto Playwright não foi criado")
 
             logger.info(
                 "[NEWS] Fazendo scrape inicial: " "source=%s limit=%s",
                 source_key,
                 limit,
             )
-            # async with browser_manager.scrape_session() as (page, context):
-            #     items = await scraper.scrape(context, limit)
-            items = await scraper.scrape(
-                browser_manager.context,
-                limit,
-            )
+            async with browser_manager.scrape_session() as context:
+                items = await scraper.scrape(
+                    context,
+                    limit,
+                )
+            # items = await scraper.scrape(
+            #     browser_manager.context,
+            #     limit,
+            # )
 
         except asyncio.CancelledError:
 
