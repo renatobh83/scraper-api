@@ -14,7 +14,8 @@ from app.utils.models import HealthResponse, NewsResponse
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
+
 # ============================================================
 # RECURSOS GLOBAIS
 # ============================================================
