@@ -8,12 +8,13 @@ import httpx
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 from playwright_stealth import Stealth
+from app.browser import BrowserManager
 from app.config import settings
 from app.utils.human_behavior import human_scroll, jitter
 from app.utils.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 SELECTOR_WAIT_TIMEOUT_MS = 3000
 
@@ -33,47 +34,9 @@ class InvestingHeadlinesScraper(NewsScraper):
 
         return random.choice(self.user_agents)
 
-    async def get_news_http(self, limit: int):
-
-        try:
-            proxy_url = os.getenv("PROXY_URL")
-            with httpx.Client(
-                proxy=proxy_url,
-                verify=False,
-                base_url=self.page_url,
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "DNT": "1",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Cache-Control": "max-age=0",
-                    "User-Agent": self.get_random_ua(),
-                },
-                follow_redirects=True,
-                timeout=10.0,
-            ) as client:
-                r = client.get(self.page_url)
-                r.raise_for_status()
-                print(r)
-        except httpx.HTTPError as e:
-            print(f"Erro HTTP ao buscar noticias : {e}")
-            return None
-        except Exception as e:
-            print(f"Erro HTTP ao buscar noticias: {e}")
-            return None
-
-    async def httpx():
-        pass
-
     async def scrape(
         self,
-        context: BrowserContext,
+        context: BrowserManager,
         limit: int,
     ) -> list[NewsItem]:
         page = await context.new_page()
@@ -158,7 +121,7 @@ class InvestingHeadlinesScraper(NewsScraper):
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
         finally:
-            logger.info("[Investing] Fechando pagina")
+            logger.info("[Investing] Fechando pagina %s", context)
             await page.close()
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:

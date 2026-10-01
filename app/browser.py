@@ -8,7 +8,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from app.config import settings
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 class BrowserManager:
@@ -38,12 +38,12 @@ class BrowserManager:
         self.proxy = self._load_proxy()
         self.block_google = os.getenv("BLOCK_GOOGLE", "1") == "1"
 
-    async def _ensure_playwright(self) -> None:
-        if self._playwright is not None:
-            return
-        async with self._playwright_lock:
-            if self._playwright is None:
-                self._playwright = await async_playwright().start()
+    # async def _ensure_playwright(self) -> None:
+    #     if self._playwright is not None:
+    #         return
+    #     async with self._playwright_lock:
+    #         if self._playwright is None:
+    #             self._playwright = await async_playwright().start()
 
     async def start(self, useProxy=True) -> None:
         # O navegador só é criado na primeira chamada a /news.
@@ -91,102 +91,102 @@ class BrowserManager:
                 """)
             await self.context.route("**/*", self._handle_route)
 
-    @asynccontextmanager
-    async def scrape_session(
-        self,
-        use_proxy: bool = True,
-    ):
-        """
-        Cria uma sessão Playwright completamente isolada.
+    # @asynccontextmanager
+    # async def scrape_session(
+    #     self,
+    #     use_proxy: bool = True,
+    # ):
+    #     """
+    #     Cria uma sessão Playwright completamente isolada.
 
-        Cada chamada cria e encerra:
-        - uma instância do Playwright;
-        - um browser Chromium;
-        - um BrowserContext.
+    #     Cada chamada cria e encerra:
+    #     - uma instância do Playwright;
+    #     - um browser Chromium;
+    #     - um BrowserContext.
 
-        O scraper é responsável por criar e fechar as páginas.
-        """
+    #     O scraper é responsável por criar e fechar as páginas.
+    #     """
 
-        playwright = None
-        browser = None
-        context = None
+    #     playwright = None
+    #     browser = None
+    #     context = None
 
-        try:
-            playwright = await async_playwright().start()
+    #     try:
+    #         playwright = await async_playwright().start()
 
-            browser = await playwright.chromium.launch(
-                headless=True,
-                slow_mo=150 if self.debug else 0,
-                proxy=self.proxy if use_proxy and self.proxy else None,
-                args=[
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-background-networking",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-ipc-flooding-protection",
-                ],
-            )
+    #         browser = await playwright.chromium.launch(
+    #             headless=,
+    #             slow_mo=150 if self.debug else 0,
+    #             proxy=self.proxy if use_proxy and self.proxy else None,
+    #             args=[
+    #                 "--disable-dev-shm-usage",
+    #                 "--disable-extensions",
+    #                 "--no-first-run",
+    #                 "--no-default-browser-check",
+    #                 "--disable-background-networking",
+    #                 "--disable-background-timer-throttling",
+    #                 "--disable-backgrounding-occluded-windows",
+    #                 "--disable-renderer-backgrounding",
+    #                 "--disable-ipc-flooding-protection",
+    #             ],
+    #         )
 
-            context = await browser.new_context(
-                locale="pt-BR",
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/152.0.0.0 Safari/537.36"
-                ),
-                viewport={
-                    "width": 1280,
-                    "height": 900,
-                },
-                accept_downloads=False,
-                java_script_enabled=True,
-                service_workers="block",
-            )
+    #         context = await browser.new_context(
+    #             locale="pt-BR",
+    #             user_agent=(
+    #                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    #                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+    #                 "Chrome/152.0.0.0 Safari/537.36"
+    #             ),
+    #             viewport={
+    #                 "width": 1280,
+    #                 "height": 900,
+    #             },
+    #             accept_downloads=False,
+    #             java_script_enabled=True,
+    #             service_workers="block",
+    #         )
 
-            await context.add_init_script("""
-                Object.defineProperty(navigator, "webdriver", {
-                    get: () => undefined
-                });
-            """)
+    #         await context.add_init_script("""
+    #             Object.defineProperty(navigator, "webdriver", {
+    #                 get: () => undefined
+    #             });
+    #         """)
 
-            await context.route(
-                "**/*",
-                self._handle_route,
-            )
+    #         await context.route(
+    #             "**/*",
+    #             self._handle_route,
+    #         )
 
-            yield context
+    #         yield context
 
-        finally:
-            if context is not None:
-                try:
-                    await context.close()
-                except Exception as exc:
-                    logger.warning(
-                        "[BROWSER] Erro ao fechar contexto: %s",
-                        exc,
-                    )
+    #     finally:
+    #         if context is not None:
+    #             try:
+    #                 await context.close()
+    #             except Exception as exc:
+    #                 logger.warning(
+    #                     "[BROWSER] Erro ao fechar contexto: %s",
+    #                     exc,
+    #                 )
 
-            if browser is not None:
-                try:
-                    await browser.close()
-                except Exception as exc:
-                    logger.warning(
-                        "[BROWSER] Erro ao fechar browser: %s",
-                        exc,
-                    )
+    #         if browser is not None:
+    #             try:
+    #                 await browser.close()
+    #             except Exception as exc:
+    #                 logger.warning(
+    #                     "[BROWSER] Erro ao fechar browser: %s",
+    #                     exc,
+    #                 )
 
-            if playwright is not None:
-                try:
-                    await playwright.stop()
-                except Exception as exc:
-                    logger.warning(
-                        "[BROWSER] Erro ao parar Playwright: %s",
-                        exc,
-                    )
+    #         if playwright is not None:
+    #             try:
+    #                 await playwright.stop()
+    #             except Exception as exc:
+    #                 logger.warning(
+    #                     "[BROWSER] Erro ao parar Playwright: %s",
+    #                     exc,
+    #                 )
 
     # @asynccontextmanager
     # async def scrape_session(self):
@@ -292,8 +292,10 @@ class BrowserManager:
     async def close(self) -> None:
         """Encerra o driver do Playwright (chamar no shutdown da app)."""
         # Fecha o contexto primeiro
+
         if self.context is not None:
             try:
+                logger.info("[Browser] Fechando Context")
                 await self.context.close()
             except Exception as e:
                 # Ignora erros de conexão durante shutdown
@@ -356,6 +358,7 @@ class BrowserManager:
         )
 
     async def new_page(self):
+        logger.info("[Browser] New page")
         await self.restart()
         page = await self.context.new_page()
         page.set_default_timeout(settings.selector_timeout_ms)
@@ -363,6 +366,5 @@ class BrowserManager:
         return page
 
     async def restart(self) -> None:
-
         await self.close()  # já existe: fecha context, browser e playwright
         await self.start()  # relança tudo do zero
