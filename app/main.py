@@ -645,73 +645,42 @@ async def news(
             raise
 
         except ScraperError as exc:
-
             logger.warning(
-                "[NEWS] Scrape inicial falhou: " "source=%s erro=%s",
+                "[NEWS] Scrape inicial falhou: source=%s erro=%s",
                 source_key,
                 exc,
             )
 
-            # ------------------------------------------------
-            # 403 / 407
-            # ------------------------------------------------
-            print(exc)
-            # if is_block_error(exc):
+            if is_block_error(exc):
+                blocked_until[cache_key] = (
+                    asyncio.get_running_loop().time()
+                    + settings.blocked_cooldown_seconds
+                )
 
-            #     blocked_until[cache_key] = (
-            #         asyncio.get_running_loop().time()
-            #         + settings.blocked_cooldown_seconds
-            #     )
+                start_background_refresh(
+                    cache_key=cache_key,
+                    scraper=scraper,
+                    limit=limit,
+                )
 
-            #     # --------------------------------------------
-            #     # Inicia recuperação em background
-            #     # --------------------------------------------
+                cached, _ = get_cache(cache_key)
+                if cached is not None:
+                    return cached.model_copy(update={"stale": True})
 
-            #     start_background_refresh(
-            #         cache_key=cache_key,
-            #         scraper=scraper,
-            #         limit=limit,
-            #     )
-
-            #     # --------------------------------------------
-            #     # Se houver cache, devolve stale
-            #     # --------------------------------------------
-
-            #     cached, _ = get_cache(cache_key)
-
-            #     if cached is not None:
-
-            #         return cached.model_copy(update={"stale": True})
-
-            #     # --------------------------------------------
-            #     # Sem cache
-            #     # --------------------------------------------
-
-            #     raise HTTPException(
-            #         status_code=503,
-            #         detail=(
-            #             "A fonte recusou temporariamente "
-            #             "a consulta. Uma nova tentativa "
-            #             "está sendo processada em background. "
-            #             "Tente novamente em até 1 minuto."
-            #         ),
-            #         headers={"Retry-After": "60"},
-            #     )
-
-            # ------------------------------------------------
-            # Outro erro
-            # ------------------------------------------------
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "A fonte recusou temporariamente a consulta. "
+                        "Tente novamente em até 1 minuto."
+                    ),
+                    headers={"Retry-After": "60"},
+                ) from exc
 
             cached, _ = get_cache(cache_key)
-
             if cached is not None:
-
                 return cached.model_copy(update={"stale": True})
 
-            raise HTTPException(
-                status_code=502,
-                detail=str(exc),
-            ) from exc
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
         except Exception as exc:
 
@@ -731,60 +700,60 @@ async def news(
                 detail=str(exc),
             ) from exc
 
-    # ========================================================
-    # 6. VALIDA RESULTADO
-    # ========================================================
+        # ========================================================
+        # 6. VALIDA RESULTADO
+        # ========================================================
 
-    if items is None:
+        if items is None:
 
-        raise HTTPException(
-            status_code=503,
-            detail=("O scraper não retornou nenhuma notícia."),
+            raise HTTPException(
+                status_code=503,
+                detail=("O scraper não retornou nenhuma notícia."),
+            )
+
+        items = list(items)
+
+        if not items:
+
+            raise HTTPException(
+                status_code=503,
+                detail=("O scraper retornou uma lista vazia."),
+            )
+
+        # ========================================================
+        # 7. MONTA RESPONSE
+        # ========================================================
+
+        result = NewsResponse(
+            source=scraper.source_name,
+            fetched_at=datetime.now(timezone.utc),
+            count=len(items),
+            stale=False,
+            items=items,
         )
 
-    items = list(items)
+        # ========================================================
+        # 8. SALVA CACHE
+        # ========================================================
 
-    if not items:
-
-        raise HTTPException(
-            status_code=503,
-            detail=("O scraper retornou uma lista vazia."),
+        cache[cache_key] = (
+            asyncio.get_running_loop().time(),
+            result,
         )
 
-    # ========================================================
-    # 7. MONTA RESPONSE
-    # ========================================================
+        blocked_until.pop(
+            cache_key,
+            None,
+        )
 
-    result = NewsResponse(
-        source=scraper.source_name,
-        fetched_at=datetime.now(timezone.utc),
-        count=len(items),
-        stale=False,
-        items=items,
-    )
+        logger.info(
+            "[NEWS] Cache atualizado: " "source=%s limit=%s items=%s",
+            source_key,
+            limit,
+            len(items),
+        )
 
-    # ========================================================
-    # 8. SALVA CACHE
-    # ========================================================
-
-    cache[cache_key] = (
-        asyncio.get_running_loop().time(),
-        result,
-    )
-
-    blocked_until.pop(
-        cache_key,
-        None,
-    )
-
-    logger.info(
-        "[NEWS] Cache atualizado: " "source=%s limit=%s items=%s",
-        source_key,
-        limit,
-        len(items),
-    )
-
-    return result
+        return result
 
 
 # ============================================================

@@ -47,12 +47,16 @@ class InvestingHeadlinesScraper(NewsScraper):
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
 
         try:
-            response = await page.goto(
-                self.page_url,
-                wait_until="commit",
-                timeout=15000,
-            )
-
+            response = await page.goto(self.page_url, wait_until="domcontentloaded")
+            try:
+                await page.wait_for_function(
+                    "document.title && !/Um momento|just a moment/i.test(document.title)",
+                    timeout=30000,
+                )
+                print("passou:", await page.title())
+            except Exception:
+                print("continua preso:", await page.title())
+                await page.screenshot(path="challenge.png")
             await jitter(1.0, 2.5)
 
             await human_scroll(
@@ -115,11 +119,13 @@ class InvestingHeadlinesScraper(NewsScraper):
 
             return items
         except ScraperError:
+            print("Error 1")
             raise
         except PlaywrightError as exc:
             raise ScraperError(
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
+
         finally:
             logger.info("[Investing] Fechando pagina")
             await page.close()

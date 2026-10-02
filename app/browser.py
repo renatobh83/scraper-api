@@ -1,10 +1,8 @@
 import asyncio
 import os
 import logging
-from contextlib import asynccontextmanager
 from urllib.parse import unquote, urlsplit, urlunsplit
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
-
+from playwright.async_api import BrowserContext, async_playwright
 
 from app.config import settings
 
@@ -12,7 +10,7 @@ logger = logging.getLogger("uvicorn.error")
 
 
 class BrowserManager:
-    """Mantém uma única instância do Chromium por processo da API."""
+    """Mantém uma única instância do Chrome (perfil persistente) por processo da API."""
 
     BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
     BLOCKED_GOOGLE_DOMAINS = {
@@ -29,226 +27,106 @@ class BrowserManager:
 
     def __init__(self) -> None:
         self._playwright = None
-        self._playwright_lock = asyncio.Lock()
-        self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self._start_lock = asyncio.Lock()
         self.debug = os.getenv("DEBUG_BROWSER", "0") == "1"
-        self.debug_pause = os.getenv("DEBUG_PAUSE", "0") == "1"
         self.proxy = self._load_proxy()
         self.block_google = os.getenv("BLOCK_GOOGLE", "1") == "1"
+        self.block_resources = os.getenv("BLOCK_RESOURCES", "1") == "1"
+        self.headless = os.getenv("BROWSER_HEADLESS", "1") == "1"
+        self.record_har = os.getenv("RECORD_HAR", "0") == "1"  # só para debug
+        self.profile_dir = os.getenv("PROFILE_DIR", "./perfil_investing")
+        self._spare_page = None
+        # opcional: se vazio, usa o UA real do Chrome instalado (mais coerente)
+        self.user_agent = os.getenv("BROWSER_USER_AGENT") or None
 
-    # async def _ensure_playwright(self) -> None:
-    #     if self._playwright is not None:
-    #         return
-    #     async with self._playwright_lock:
-    #         if self._playwright is None:
-    #             self._playwright = await async_playwright().start()
+    async def start(self, useProxy: bool = True) -> None:
 
-    async def start(self, useProxy=True) -> None:
-        # O navegador só é criado na primeira chamada a /news.
-        if self.browser is not None:
+        if self.context is not None:
             return
 
         async with self._start_lock:
-            if self.browser is not None:
+            if self.context is not None:
                 return
 
             self._playwright = await async_playwright().start()
-            self.browser = await self._playwright.chromium.launch(
-                headless=True,
+
+            kwargs = dict(
+                user_data_dir=self.profile_dir,
+                channel="chrome",
+                headless=self.headless,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
-                args=[
-                    "--disable-dev-shm-usage",
-                    "--disable-extensions",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-background-networking",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
-                    "--disable-ipc-flooding-protection",
-                ],
-            )
-
-            self.context = await self.browser.new_context(
                 locale="pt-BR",
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/152.0.0.0 Safari/537.36"
-                ),
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
-                java_script_enabled=True,
                 service_workers="block",
+                ignore_default_args=["--enable-automation"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
             )
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                """)
-            await self.context.route("**/*", self._handle_route)
+            if self.user_agent:
+                kwargs["user_agent"] = self.user_agent
+            if self.record_har:
+                kwargs.update(record_har_path="debug.har", record_har_content="embed")
 
-    # @asynccontextmanager
-    # async def scrape_session(
-    #     self,
-    #     use_proxy: bool = True,
-    # ):
-    #     """
-    #     Cria uma sessão Playwright completamente isolada.
+            try:
+                self.context = (
+                    await self._playwright.chromium.launch_persistent_context(**kwargs)
+                )
+                if self.block_resources or self.block_google:
+                    await self.context.route("**/*", self._handle_route)
+                self._spare_page = self.context.pages[0] if self.context.pages else None
+            except Exception:
+                # não deixa o Playwright pendurado se o launch falhar
+                await self.close()
+                raise
 
-    #     Cada chamada cria e encerra:
-    #     - uma instância do Playwright;
-    #     - um browser Chromium;
-    #     - um BrowserContext.
+    async def _handle_route(self, route) -> None:
+        hostname = urlsplit(route.request.url).hostname or ""
 
-    #     O scraper é responsável por criar e fechar as páginas.
-    #     """
+        # nunca bloquear o Cloudflare, senão o desafio não completa
+        if hostname.endswith("cloudflare.com"):
+            await route.continue_()
+            return
 
-    #     playwright = None
-    #     browser = None
-    #     context = None
+        if self.block_google and self._is_blocked_google_host(hostname):
+            await route.abort(error_code="blockedbyclient")
+            return
 
-    #     try:
-    #         playwright = await async_playwright().start()
+        if (
+            self.block_resources
+            and route.request.resource_type in self.BLOCKED_RESOURCE_TYPES
+        ):
+            await route.abort(error_code="blockedbyclient")
+            return
 
-    #         browser = await playwright.chromium.launch(
-    #             headless=,
-    #             slow_mo=150 if self.debug else 0,
-    #             proxy=self.proxy if use_proxy and self.proxy else None,
-    #             args=[
-    #                 "--disable-dev-shm-usage",
-    #                 "--disable-extensions",
-    #                 "--no-first-run",
-    #                 "--no-default-browser-check",
-    #                 "--disable-background-networking",
-    #                 "--disable-background-timer-throttling",
-    #                 "--disable-backgrounding-occluded-windows",
-    #                 "--disable-renderer-backgrounding",
-    #                 "--disable-ipc-flooding-protection",
-    #             ],
-    #         )
+        await route.continue_()
 
-    #         context = await browser.new_context(
-    #             locale="pt-BR",
-    #             user_agent=(
-    #                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    #                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-    #                 "Chrome/152.0.0.0 Safari/537.36"
-    #             ),
-    #             viewport={
-    #                 "width": 1280,
-    #                 "height": 900,
-    #             },
-    #             accept_downloads=False,
-    #             java_script_enabled=True,
-    #             service_workers="block",
-    #         )
+    async def close(self) -> None:
+        """Encerra contexto e driver (chamar no shutdown da app)."""
+        if self.context is not None:
+            try:
+                logger.info("[Browser] Fechando Context")
+                await self.context.close()  # grava o perfil em disco
+            except Exception as e:
+                logger.warning(f"Erro ao fechar contexto: {e}")
+            finally:
+                self.context = None
+                self._spare_page = None
 
-    #         await context.add_init_script("""
-    #             Object.defineProperty(navigator, "webdriver", {
-    #                 get: () => undefined
-    #             });
-    #         """)
-
-    #         await context.route(
-    #             "**/*",
-    #             self._handle_route,
-    #         )
-
-    #         yield context
-
-    #     finally:
-    #         if context is not None:
-    #             try:
-    #                 await context.close()
-    #             except Exception as exc:
-    #                 logger.warning(
-    #                     "[BROWSER] Erro ao fechar contexto: %s",
-    #                     exc,
-    #                 )
-
-    #         if browser is not None:
-    #             try:
-    #                 await browser.close()
-    #             except Exception as exc:
-    #                 logger.warning(
-    #                     "[BROWSER] Erro ao fechar browser: %s",
-    #                     exc,
-    #                 )
-
-    #         if playwright is not None:
-    #             try:
-    #                 await playwright.stop()
-    #             except Exception as exc:
-    #                 logger.warning(
-    #                     "[BROWSER] Erro ao parar Playwright: %s",
-    #                     exc,
-    #                 )
-
-    # @asynccontextmanager
-    # async def scrape_session(self):
-    #     """
-    #     Abre um browser + context + page isolados para UMA operação de scrape
-    #     e fecha tudo ao sair do bloco. Cada chamada usa seu próprio browser
-    #     (garante IP/túnel novo no proxy) sem interferir em scrapes concorrentes.
-
-    #     Uso:
-    #         async with browser_manager.scrape_session() as (page, context):
-    #             ...
-    #     """
-    #     await self._ensure_playwright()
-
-    #     browser: Browser = await self._playwright.webkit.launch(
-    #         headless=False,
-    #         slow_mo=150 if self.debug else 0,
-    #         proxy=self.proxy,
-    #         args=[
-    #             "--disable-dev-shm-usage",
-    #             "--disable-extensions",
-    #             "--no-first-run",
-    #             "--no-default-browser-check",
-    #             "--disable-background-networking",
-    #             "--disable-background-timer-throttling",
-    #             "--disable-backgrounding-occluded-windows",
-    #             "--disable-renderer-backgrounding",
-    #             "--disable-ipc-flooding-protection",
-    #         ],
-    #     )
-    #     try:
-    #         context: BrowserContext = await browser.new_context(
-    #             locale="pt-BR",
-    #             user_agent=(
-    #                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    #                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-    #                 "Chrome/152.0.0.0 Safari/537.36"
-    #             ),
-    #             viewport={"width": 1280, "height": 900},
-    #             accept_downloads=False,
-    #             java_script_enabled=True,
-    #             service_workers="block",
-    #         )
-    #         await context.add_init_script("""
-    #             Object.defineProperty(navigator, 'webdriver', {
-    #                 get: () => undefined
-    #             });
-    #             """)
-    #         await context.route("**/*", self._handle_route)
-    #         await context.route(
-    #             "**/*.{png,jpg,jpeg,css,woff,woff2}", lambda route: route.abort()
-    #         )
-    #         page: Page = await context.new_page()
-    #         page.set_default_timeout(settings.selector_timeout_ms)
-    #         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
-
-    #         try:
-    #             yield page, context
-    #         finally:
-    #             await context.close()
-    #     finally:
-    #         await browser.close()
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception as e:
+                logger.warning(f"Erro ao parar Playwright: {e}")
+            finally:
+                self._playwright = None
+                self._spare_page = None
 
     @staticmethod
     def _load_proxy() -> dict[str, str] | None:
@@ -265,9 +143,7 @@ class BrowserManager:
                     "PROXY_URL deve ter o formato http://usuario:senha@host:porta"
                 )
 
-            netloc = parsed.hostname
-            if parsed.port:
-                netloc = f"{netloc}:{parsed.port}"
+            netloc = f"{parsed.hostname}:{parsed.port}"
             proxy = {
                 "server": urlunsplit(
                     (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
@@ -289,62 +165,6 @@ class BrowserManager:
 
         return None
 
-    async def close(self) -> None:
-        """Encerra o driver do Playwright (chamar no shutdown da app)."""
-        # Fecha o contexto primeiro
-
-        if self.context is not None:
-            try:
-                logger.info("[Browser] Fechando Context")
-                await self.context.close()
-            except Exception as e:
-                # Ignora erros de conexão durante shutdown
-                if "closed" in str(e).lower() or "connection" in str(e).lower():
-                    print(f"Contexto já estava fechado: {e}")
-                else:
-                    print(f"Erro ao fechar contexto: {e}")
-            finally:
-                self.context = None
-
-        # Depois fecha o browser
-        if self.browser is not None:
-            try:
-                await self.browser.close()
-            except Exception as e:
-                if "closed" in str(e).lower() or "connection" in str(e).lower():
-                    print(f"Browser já estava fechado: {e}")
-                else:
-                    print(f"Erro ao fechar browser: {e}")
-            finally:
-                self.browser = None
-
-        # Por último, para o Playwright
-        if self._playwright is not None:
-            try:
-                await self._playwright.stop()
-            except Exception as e:
-                if "closed" in str(e).lower() or "connection" in str(e).lower():
-                    print(f"Playwright já estava parado: {e}")
-                else:
-                    print(f"Erro ao parar Playwright: {e}")
-            finally:
-                self._playwright = None
-
-    async def _handle_route(self, route) -> None:
-        request_url = route.request.url
-        hostname = urlsplit(request_url).hostname
-
-        if self.block_google and self._is_blocked_google_host(hostname):
-
-            await route.abort(error_code="blockedbyclient")
-            return
-
-        if route.request.resource_type in self.BLOCKED_RESOURCE_TYPES:
-            await route.abort(error_code="blockedbyclient")
-            return
-
-        await route.continue_()
-
     @classmethod
     def _is_blocked_google_host(cls, hostname: str | None) -> bool:
         if not hostname:
@@ -360,11 +180,15 @@ class BrowserManager:
     async def new_page(self):
         if self.context is None:
             raise RuntimeError("Contexto Playwright não foi criado")
-        page = await self.context.new_page()
+
+        page = None
+        # reaproveita a aba inicial, se ainda estiver viva
+        if self._spare_page is not None and not self._spare_page.is_closed():
+            page, self._spare_page = self._spare_page, None
+        else:
+            self._spare_page = None
+            page = await self.context.new_page()
+
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
         return page
-
-    async def restart(self) -> None:
-        await self.close()  # já existe: fecha context, browser e playwright
-        await self.start()  # relança tudo do zero
