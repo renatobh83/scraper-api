@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from app.utils.security import verify_api_key
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from typing import Annotated
 
 
@@ -44,7 +44,7 @@ background_tasks: dict[tuple[str, int], asyncio.Task] = {}
 # ============================================================
 
 # Primeira tentativa do background
-BACKGROUND_FIRST_RETRY = 5
+BACKGROUND_FIRST_RETRY = 0.5
 
 # Backoff entre tentativas
 BACKGROUND_BACKOFF = [5, 10, 20, 30]
@@ -110,9 +110,20 @@ app = FastAPI(
     lifespan=lifespan,
     # dependencies=[Depends(verify_api_key)],
 )
+
+
 # ============================================================
 # FUNÇÃO PARA VERIFICAR CACHE
 # ============================================================
+def cache_age_seconds(cache_key: tuple[str, int]) -> int | None:
+    cached = cache.get(cache_key)
+    if cached is None:
+        return None
+
+    timestamp, _ = cached
+
+    now = asyncio.get_running_loop().time()
+    return int(now - timestamp)
 
 
 def get_cache(
@@ -253,6 +264,7 @@ async def background_refresh(
                     fetched_at=datetime.now(timezone.utc),
                     count=len(items),
                     stale=False,
+                    age_seconds=0,
                     items=items,
                 )
 
@@ -473,6 +485,7 @@ async def teste(
     response_model=NewsResponse,
 )
 async def news(
+    response: Response,
     source: str = Query(
         "investing",
         min_length=1,
@@ -513,6 +526,10 @@ async def news(
             source_key,
             limit,
         )
+        age = cache_age_seconds(cache_key) or 0
+        response.headers["X-Cache"] = "HIT"
+        response.headers["X-Cache-Age"] = str(age)
+        response.headers["Cache-Control"] = "no-store"
         return cached
 
     # ========================================================
@@ -536,8 +553,11 @@ async def news(
                 source_key,
                 remaining,
             )
-
-            return cached.model_copy(update={"stale": True})
+            age = cache_age_seconds(cache_key) or 0
+            response.headers["X-Cache"] = "STALE"
+            response.headers["X-Cache-Age"] = str(age)
+            response.headers["Cache-Control"] = "no-store"
+            return cached.model_copy(update={"stale": True, "age_seconds": age})
 
         logger.info(
             "[NEWS] CACHE STALE: source=%s limit=%s",
@@ -550,8 +570,11 @@ async def news(
             scraper=scraper,
             limit=limit,
         )
-
-        return cached.model_copy(update={"stale": True})
+        age = cache_age_seconds(cache_key) or 0
+        response.headers["X-Cache"] = "STALE"
+        response.headers["X-Cache-Age"] = str(age)
+        response.headers["Cache-Control"] = "no-store"
+        return cached.model_copy(update={"stale": True, "age_seconds": age})
 
     # ========================================================
     # 3. VERIFICA COOLDOWN
@@ -619,7 +642,10 @@ async def news(
         if cached is not None and is_fresh:
 
             logger.info("[NEWS] CACHE preenchido enquanto aguardava")
-
+            age = cache_age_seconds(cache_key) or 0
+            response.headers["X-Cache"] = "HIT"
+            response.headers["X-Cache-Age"] = str(age)
+            response.headers["Cache-Control"] = "no-store"
             return cached
 
         try:
@@ -665,7 +691,11 @@ async def news(
 
                 cached, _ = get_cache(cache_key)
                 if cached is not None:
-                    return cached.model_copy(update={"stale": True})
+                    age = cache_age_seconds(cache_key) or 0
+                    response.headers["X-Cache"] = "STALE"
+                    response.headers["X-Cache-Age"] = str(age)
+                    response.headers["Cache-Control"] = "no-store"
+                    return cached.model_copy(update={"stale": True, "age_seconds": age})
 
                 raise HTTPException(
                     status_code=503,
@@ -678,7 +708,11 @@ async def news(
 
             cached, _ = get_cache(cache_key)
             if cached is not None:
-                return cached.model_copy(update={"stale": True})
+                age = cache_age_seconds(cache_key) or 0
+                response.headers["X-Cache"] = "STALE"
+                response.headers["X-Cache-Age"] = str(age)
+                response.headers["Cache-Control"] = "no-store"
+                return cached.model_copy(update={"stale": True, "age_seconds": age})
 
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -692,8 +726,11 @@ async def news(
             cached, _ = get_cache(cache_key)
 
             if cached is not None:
-
-                return cached.model_copy(update={"stale": True})
+                age = cache_age_seconds(cache_key) or 0
+                response.headers["X-Cache"] = "STALE"
+                response.headers["X-Cache-Age"] = str(age)
+                response.headers["Cache-Control"] = "no-store"
+                return cached.model_copy(update={"stale": True, "age_seconds": age})
 
             raise HTTPException(
                 status_code=503,
@@ -729,6 +766,7 @@ async def news(
             fetched_at=datetime.now(timezone.utc),
             count=len(items),
             stale=False,
+            age_seconds=0,
             items=items,
         )
 
@@ -752,7 +790,9 @@ async def news(
             limit,
             len(items),
         )
-
+        response.headers["X-Cache"] = "MISS"
+        response.headers["X-Cache-Age"] = "0"
+        response.headers["Cache-Control"] = "no-store"
         return result
 
 

@@ -47,15 +47,15 @@ class InvestingHeadlinesScraper(NewsScraper):
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)
 
         try:
+            logger.info("[Investing] vai chamar page.goto")
             response = await page.goto(self.page_url, wait_until="domcontentloaded")
             try:
                 await page.wait_for_function(
                     "document.title && !/Um momento|just a moment/i.test(document.title)",
                     timeout=30000,
                 )
-                print("passou:", await page.title())
-            except Exception:
-                print("continua preso:", await page.title())
+            except Exception as e:
+                logger.warning("[Investing] page.goto falhou: %r", e)
                 await page.screenshot(path="challenge.png")
             await jitter(1.0, 2.5)
 
@@ -119,7 +119,6 @@ class InvestingHeadlinesScraper(NewsScraper):
 
             return items
         except ScraperError:
-            print("Error 1")
             raise
         except PlaywrightError as exc:
             raise ScraperError(

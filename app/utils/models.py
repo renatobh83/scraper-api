@@ -17,6 +17,7 @@ class NewsResponse(BaseModel):
     fetched_at: datetime
     count: int
     stale: bool = False
+    age_seconds: int | None = None
     items: list[NewsItem] = Field(default_factory=list)
 
 
