@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from app.utils.security import verify_api_key
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from typing import Annotated
-
+from uvicorn.logging import DefaultFormatter
 
 from app.browser import BrowserManager
 from app.config import settings
@@ -15,7 +15,14 @@ from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 
 logger = logging.getLogger("uvicorn.error")
-
+for handler in logger.handlers:
+    handler.setFormatter(
+        DefaultFormatter(
+            fmt="%(asctime)s %(levelprefix)s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            use_colors=True,
+        )
+    )
 # ============================================================
 # RECURSOS GLOBAIS
 # ============================================================
