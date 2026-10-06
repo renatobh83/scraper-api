@@ -15,14 +15,7 @@ from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 
 logger = logging.getLogger("uvicorn.error")
-for handler in logger.handlers:
-    handler.setFormatter(
-        DefaultFormatter(
-            fmt="%(asctime)s %(levelprefix)s %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-            use_colors=True,
-        )
-    )
+
 # ============================================================
 # RECURSOS GLOBAIS
 # ============================================================
