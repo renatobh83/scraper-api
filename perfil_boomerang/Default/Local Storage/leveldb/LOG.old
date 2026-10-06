@@ -1,7 +1,5 @@
-2026/10/06-14:49:20.584 37c Reusing MANIFEST C:\Users\suporte2\Documents\Programacao\Python\news-scraper-api\perfil_boomerang\Default\Local Storage\leveldb/MANIFEST-000001
-2026/10/06-14:49:20.585 37c Recovering log #22
-2026/10/06-14:49:20.586 37c Level-0 table #25: started
-2026/10/06-14:49:20.591 37c Level-0 table #25: 56426 bytes OK
-2026/10/06-14:49:20.592 37c Recovering log #24
-2026/10/06-14:49:20.594 37c Reusing old log C:\Users\suporte2\Documents\Programacao\Python\news-scraper-api\perfil_boomerang\Default\Local Storage\leveldb/000024.log 
-2026/10/06-14:49:20.595 37c Delete type=0 #22
+2026/10/06-15:55:33.470 2f8c Reusing MANIFEST C:\Users\suporte2\Documents\Programacao\Python\news-scraper-api\perfil_boomerang\Default\Local Storage\leveldb/MANIFEST-000001
+2026/10/06-15:55:33.471 2f8c Recovering log #82
+2026/10/06-15:55:33.473 2f8c Level-0 table #84: started
+2026/10/06-15:55:33.477 2f8c Level-0 table #84: 56217 bytes OK
+2026/10/06-15:55:33.482 2f8c Delete type=0 #82
