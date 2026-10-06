@@ -441,7 +441,7 @@ app.include_router(public_router)
 # ============================================================
 @app.get("/teste")
 async def teste(
-    source: Annotated[str, Query(min_length=1, max_length=30)] = "statusinvest",
+    source: Annotated[str, Query(min_length=1, max_length=30)] = "teste",
     ticker: str = Query(
         "PETR4",
         min_length=1,
@@ -458,21 +458,20 @@ async def teste(
                 "available_sources": sorted(SCRAPERS),
             },
         )
-    try:
-        await browser_manager.start(useProxy=False)
-        if browser_manager.context is None:
-            raise ScraperError("Contexto Playwright não foi criado")
+    async with scrape_semaphore:
+        try:
+            await browser_manager.start("./perfil_boomerang", useProxy=False)
 
-        dados = await scraper.scrape(browser_manager.context, ticker)
+            if browser_manager.context is None:  # <-- verifica context, não o manager
+                raise ScraperError("Contexto Playwright não foi criado")
 
-        return {dados}
-    except asyncio.CancelledError:
-        raise
-    except ScraperError as exc:
-        raise
-    # finally:
-    # if page:
-    #     await page.close()
+            dados = await scraper.scrape(browser_manager, 30)
+            return {"items": dados}
+
+        except asyncio.CancelledError:
+            raise
+        except ScraperError:
+            raise
 
 
 # ============================================================
@@ -662,7 +661,7 @@ async def news(
             )
 
             items = await scraper.scrape(
-                browser_manager,
+                browser_manager,  # type: ignore
                 limit,
             )
 

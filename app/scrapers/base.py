@@ -3,6 +3,7 @@ from collections.abc import Sequence
 
 from playwright.async_api import BrowserContext
 
+from app.browser import BrowserManager
 from app.utils.models import NewsItem
 
 
@@ -16,10 +17,11 @@ class NewsScraper(ABC):
     @abstractmethod
     async def scrape(
         self,
-        context: BrowserContext,
+        context: BrowserContext | BrowserManager,
         limit: int,
     ) -> Sequence[NewsItem]:
         raise NotImplementedError
+
 
 class MlScraper(ABC):
     source_name: str

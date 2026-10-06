@@ -10,12 +10,13 @@ async def main():
     bm.headless = True
     bm.block_resources = False  # desligue os bloqueios no teste
     bm.block_google = False
-    await bm.start()
+    await bm.start("./perfil_boomerang", useProxy=False)
 
     page = await bm.new_page()
     page.set_default_navigation_timeout(90000)
     await page.goto(
-        "https://br.investing.com/news/headlines", wait_until="domcontentloaded"
+        "https://www.bloomberg.com/latest?utm_source=homepage&utm_medium=web&utm_campaign=latest",
+        wait_until="commit",
     )
 
     try:
@@ -29,10 +30,7 @@ async def main():
     print("título:", await page.title())
     print("url:", page.url)
     print("UA:", await page.evaluate("navigator.userAgent"))
-    cookies = await bm.context.cookies("https://br.investing.com")
-    print("cf_clearance:", any(c["name"] == "cf_clearance" for c in cookies))
-    await page.screenshot(path="headless.png")
-
+    await page.pause()
     await bm.close()
     await asyncio.sleep(0.5)
 

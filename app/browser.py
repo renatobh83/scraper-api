@@ -40,10 +40,18 @@ class BrowserManager:
         # opcional: se vazio, usa o UA real do Chrome instalado (mais coerente)
         self.user_agent = os.getenv("BROWSER_USER_AGENT") or None
 
-    async def start(self, useProxy: bool = True) -> None:
+    async def start(
+        self, data_dir: str = "./perfil_investing", useProxy: bool = True
+    ) -> None:
 
         if self.context is not None:
-            return
+            try:
+                await self.context.close()
+            except Exception:
+                pass
+            self.context = None
+            self.browser = None
+            self.playwright = None
 
         async with self._start_lock:
             if self.context is not None:
@@ -52,9 +60,9 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
 
             kwargs = dict(
-                user_data_dir=self.profile_dir,
+                user_data_dir=data_dir,
                 channel="chrome",
-                headless=self.headless,
+                headless=False,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
                 locale="pt-BR",
