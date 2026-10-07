@@ -24,14 +24,14 @@ class BloombergHeadlinesScraper(NewsScraper):
         limit: int,
     ):
         page = await context.new_page()
-        logger.info("[Boomerang] Abrindo pagina")
+        logger.info("[bloomberg] Abrindo pagina")
         stealth = Stealth()
         await stealth.apply_stealth_async(page)
         try:
-            logger.info("[Boomerang] vai chamar page.goto")
+            logger.info("[bloomberg] vai chamar page.goto")
             response = await page.goto(self.page_url, wait_until="domcontentloaded", timeout=3000)
 
-            logger.info("[Boomerang] STATUS: %s", response.status if response else None)
+            logger.info("[bloomberg] STATUS: %s", response.status if response else None)
             status = response.status if response else None
             if status is not None and status >= 400:
                 title = await page.title()
@@ -45,7 +45,7 @@ class BloombergHeadlinesScraper(NewsScraper):
                     print(box)
                     if box:
                         logger.info(
-                            "[Boomerang] Botão encontrado. Iniciando clique e segure..."
+                            "[bloomberg] Botão encontrado. Iniciando clique e segure..."
                         )
 
                         # 4. Move o mouse para o centro do botão
@@ -65,21 +65,21 @@ class BloombergHeadlinesScraper(NewsScraper):
                         # 7. Solta o botão do mouse (Fim do "Segurar")
                         await page.mouse.up()
 
-                        logger.info("[Boomerang] Clique e segure finalizado.")
+                        logger.info("[bloomberg] Clique e segure finalizado.")
 
                         # Opcional: Esperar um pouco após soltar para o captcha processar
                         await page.wait_for_timeout(2000)
                 except Exception as e:
-                        logger.warning(f"[Boomerang] Erro ao tentar clicar no captcha: {e}")
+                        logger.warning(f"[bloomberg] Erro ao tentar clicar no captcha: {e}")
 
                 logger.warning(
-                    "Boomerang bloqueou a navegação: status=%s url=%s title=%r",
+                    "bloomberg bloqueou a navegação: status=%s url=%s title=%r",
                     status,
                     page.url,
                     title,
                 )
                 raise ScraperError(
-                    f"Boomerang respondeu HTTP {status} mesmo com Playwright "
+                    f"bloomberg respondeu HTTP {status} mesmo com Playwright "
                     f"(url={page.url}, title={title!r})."
                 )
             try:
@@ -111,7 +111,7 @@ class BloombergHeadlinesScraper(NewsScraper):
             ) from exc
 
         finally:
-            logger.info("[Boomerang] Fechando pagina")
+            logger.info("[bloomberg] Fechando pagina")
             await page.close()
 
     def _parse_html(self, html: str, limit: int):
