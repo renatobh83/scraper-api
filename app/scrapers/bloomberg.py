@@ -33,42 +33,58 @@ class BloombergHeadlinesScraper(NewsScraper):
 
             logger.info("[bloomberg] STATUS: %s", response.status if response else None)
             status = response.status if response else None
+           
+            
             if status is not None and status >= 400:
-                title = await page.title()
-                
-                botao = page.locator('div[role="button"][aria-label="Press and hold"]')
+                # await page.wait_for_timeout(3000)  # 3s
+             
+                iframe_sel = 'iframe[title="Human verification challenge"]'   
+                iframe_el = page.locator(iframe_sel)
+                iframe_style = await page.locator('iframe[title="Human verification challenge"]').get_attribute("style")
+                logger.info("[Boomerang] iframe style: %r", iframe_style)
+
                 try:
-                    await botao.wait_for(state="visible", timeout=10000)
+                    await iframe_el.wait_for(state="visible", timeout=20000)
+                except PlaywrightError as e:
+                    logger.exception("[Boomerang] iframe do captcha não ficou visível: %s", e)
+                    return False
 
+                logger.info("[Boomerang] iframe visível no parent.")
+                iframe_box = await iframe_el.bounding_box()
+                logger.info("[Boomerang] iframe bounding box: %s", iframe_box)
+                # botao = iframe_loc.locator('div[role="button"]').filter(has_text="Press & Hold")
+                # n = await iframe_loc.locator('div[role="button"]').count()
+                # logger.info("[Boomerang] role=button no iframe: %s", n)
+                # for i in range(n):
+                #     el = iframe_loc.locator('div[role="button"]').nth(i)
+                #     lbl = await el.get_attribute("aria-label")
+                #     txt = await el.inner_text()
+                #     logger.info("[Boomerang] iframe button[%s] aria-label=%r text=%r", i, lbl, txt)
                     
-                    box = await botao.bounding_box()
-                    print(box)
-                    if box:
-                        logger.info(
-                            "[bloomberg] Botão encontrado. Iniciando clique e segure..."
-                        )
+                title = await page.title()       
 
-                        # 4. Move o mouse para o centro do botão
-                        await page.mouse.move(
-                            box["x"] + box["width"] / 2,
-                            box["y"] + box["height"] / 2,
-                            steps=10,  # Move em passos para parecer mais humano
-                        )
+                # await page.pause()
+                try:
+                    pass
+                    # await botao.wait_for(state="attached", timeout=15000)
+                    logger.info("[Boomerang] Botão anexado ao DOM.")
+                    
+                    box = await botao.first.bounding_box()
+                    logger.info("[Boomerang] Bounding box: %s", box)
+                  
 
-                        # 5. Pressiona o botão do mouse (Início do "Segurar")
-                        await page.mouse.down()
+                    if not box or box["width"] == 0 or box["height"] == 0:
+                        logger.warning("[Boomerang] Bounding box inválido.")
+                        return False
 
-                        # 6. Espera um tempo (Simula o humano segurando)
-                        # Ajuste esse tempo conforme o necessário (ex: 2 a 5 segundos)
-                        await page.wait_for_timeout(3000)
-
-                        # 7. Solta o botão do mouse (Fim do "Segurar")
-                        await page.mouse.up()
-
-                        logger.info("[bloomberg] Clique e segure finalizado.")
-
-                        # Opcional: Esperar um pouco após soltar para o captcha processar
-                        await page.wait_for_timeout(2000)
+                    await page.mouse.move(
+                        box["x"] + box["width"] / 2,
+                        box["y"] + box["height"] / 2,
+                        steps=15,
+                    )
+                    await page.mouse.down()
+                    await page.wait_for_timeout(3000)
+                    await page.mouse.up()
                 except Exception as e:
                         logger.warning(f"[bloomberg] Erro ao tentar clicar no captcha: {e}")
 
@@ -82,6 +98,7 @@ class BloombergHeadlinesScraper(NewsScraper):
                     f"bloomberg respondeu HTTP {status} mesmo com Playwright "
                     f"(url={page.url}, title={title!r})."
                 )
+
             try:
                 await page.wait_for_selector(
                     'div[class="Latest_latestBody__5ByZA"]'
@@ -102,14 +119,12 @@ class BloombergHeadlinesScraper(NewsScraper):
                 )
 
             return items
-
-        except ScraperError:
-            raise
         except PlaywrightError as exc:
             raise ScraperError(
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
-
+        except Exception as e:
+            print(e)
         finally:
             logger.info("[bloomberg] Fechando pagina")
             await page.close()

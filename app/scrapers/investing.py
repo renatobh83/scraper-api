@@ -16,7 +16,7 @@ from app.scrapers.base import NewsScraper, ScraperError
 
 logger = logging.getLogger("uvicorn.error")
 
-SELECTOR_WAIT_TIMEOUT_MS = 3000
+SELECTOR_WAIT_TIMEOUT_MS = 30000
 
 
 class InvestingHeadlinesScraper(NewsScraper):
