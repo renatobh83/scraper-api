@@ -29,7 +29,7 @@ class BloombergHeadlinesScraper(NewsScraper):
         await stealth.apply_stealth_async(page)
         try:
             logger.info("[bloomberg] vai chamar page.goto")
-            response = await page.goto(self.page_url, wait_until="domcontentloaded", timeout=3000)
+            response = await page.goto(self.page_url, wait_until="domcontentloaded", timeout=30000)
 
             logger.info("[bloomberg] STATUS: %s", response.status if response else None)
             status = response.status if response else None
