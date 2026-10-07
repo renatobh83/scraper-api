@@ -10,7 +10,7 @@ async def main():
     bm.headless = True
     bm.block_resources = False  # desligue os bloqueios no teste
     bm.block_google = False
-    await bm.start("./perfil_boomerang", useProxy=False)
+    await bm.start("./perfil_bloomberg", useProxy=False)
 
     page = await bm.new_page()
     page.set_default_navigation_timeout(90000)
@@ -30,6 +30,7 @@ async def main():
     print("título:", await page.title())
     print("url:", page.url)
     print("UA:", await page.evaluate("navigator.userAgent"))
+
     await page.pause()
     await bm.close()
     await asyncio.sleep(0.5)

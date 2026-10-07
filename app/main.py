@@ -460,7 +460,7 @@ async def teste(
         )
     async with scrape_semaphore:
         try:
-            await browser_manager.start("./perfil_boomerang", useProxy=False)
+            await browser_manager.start("./perfil_bloomberg", useProxy=False)
 
             if browser_manager.context is None:  # <-- verifica context, não o manager
                 raise ScraperError("Contexto Playwright não foi criado")

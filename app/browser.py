@@ -62,7 +62,7 @@ class BrowserManager:
             kwargs = dict(
                 user_data_dir=data_dir,
                 channel="chrome",
-                headless=False,
+                headless= self.headless,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
                 locale="pt-BR",

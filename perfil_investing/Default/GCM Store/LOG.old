@@ -1,3 +1,2 @@
-2026/10/05-08:20:36.099 56a0 Reusing MANIFEST C:\Users\suporte2\Documents\Programacao\Python\news-scraper-api\perfil_investing\Default\GCM Store/MANIFEST-000001
-2026/10/05-08:20:36.099 56a0 Recovering log #3
-2026/10/05-08:20:36.099 56a0 Reusing old log C:\Users\suporte2\Documents\Programacao\Python\news-scraper-api\perfil_investing\Default\GCM Store/000003.log 
+2026/10/06-21:31:41.449 5e16b Creating DB /Users/renato/Desktop/Dev/scraper-api/perfil_investing/Default/GCM Store since it was missing.
+2026/10/06-21:31:41.453 5e16b Reusing MANIFEST /Users/renato/Desktop/Dev/scraper-api/perfil_investing/Default/GCM Store/MANIFEST-000001
