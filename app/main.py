@@ -340,6 +340,7 @@ async def news(
     response: Response,
     source: str = Query("investing", min_length=1, max_length=30),
     limit: int = Query(20, ge=1, le=settings.max_news_items),
+    proxy: bool = True,
 ) -> NewsResponse:
     source_key = source.lower()
     scraper = get_scraper(source_key)
@@ -397,7 +398,9 @@ async def news(
             logger.info(
                 "[NEWS] Fazendo scrape inicial: source=%s limit=%s", source_key, limit
             )
-            result = await scrape_news(scraper, limit, data_dir=source_key)
+            result = await scrape_news(
+                scraper, limit, data_dir=source_key, useProxy=proxy
+            )
 
         except Exception as exc:  # CancelledError passa direto
             blocked = is_block_error(exc)
