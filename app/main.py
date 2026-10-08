@@ -1,20 +1,22 @@
 import asyncio
-import http
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from app.utils.security import verify_api_key
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from typing import Annotated
-from uvicorn.logging import DefaultFormatter
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 
 from app.browser import BrowserManager
 from app.config import settings
-from app.utils.models import HealthResponse, NewsResponse
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
+from app.utils.models import HealthResponse, NewsResponse
+from app.utils.security import verify_api_key
 
 logger = logging.getLogger("uvicorn.error")
+
+CacheKey = tuple[str, int]
 
 # ============================================================
 # RECURSOS GLOBAIS
@@ -22,35 +24,28 @@ logger = logging.getLogger("uvicorn.error")
 
 scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
 browser_manager = BrowserManager()
-cache: dict[tuple[str, int], tuple[float, NewsResponse]] = {}
 
-# Controla quando uma fonte pode voltar a ser consultada
-blocked_until: dict[tuple[str, int], float] = {}
+cache: dict[CacheKey, tuple[float, NewsResponse]] = {}
 
-# Controla os refreshes em background
-#
-# Evita:
-#
-# request 1 -> background
-# request 2 -> background
-# request 3 -> background
-#
-# todos fazendo scrape ao mesmo tempo.
-background_tasks: dict[tuple[str, int], asyncio.Task] = {}
+# Quando uma fonte pode voltar a ser consultada
+blocked_until: dict[CacheKey, float] = {}
 
+# Um refresh em background por chave
+background_tasks: dict[CacheKey, asyncio.Task] = {}
+
+# Um scrape em andamento por chave (evita N requests iguais raspando juntas)
+key_locks: dict[CacheKey, asyncio.Lock] = {}
 
 # ============================================================
-# CONFIGURAÇÃO DO RETRY
+# CONFIGURAÇÃO
 # ============================================================
 
-# Primeira tentativa do background
 BACKGROUND_FIRST_RETRY = 0.5
-
-# Backoff entre tentativas
 BACKGROUND_BACKOFF = [5, 10, 20, 30]
-
-# Tempo máximo aproximado de recuperação
 BACKGROUND_MAX_TIME = 60
+
+# Tempo máximo de um scrape (segura o semaphore, então precisa ter limite)
+SCRAPE_TIMEOUT = 45
 
 
 # ============================================================
@@ -60,110 +55,157 @@ BACKGROUND_MAX_TIME = 60
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-
     logger.info("[APP] Iniciando aplicação")
-
     try:
         yield
-
     finally:
-
         logger.info("[APP] Encerrando aplicação")
 
-        # Cancela os refreshes em background
-        for key, task in list(background_tasks.items()):
-
+        tasks = list(background_tasks.values())
+        for task in tasks:
             if not task.done():
-
-                logger.info(
-                    "[APP] Cancelando background refresh: %s",
-                    key,
-                )
-
                 task.cancel()
 
-        if background_tasks:
-
-            await asyncio.gather(
-                *background_tasks.values(),
-                return_exceptions=True,
-            )
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         background_tasks.clear()
-
         await browser_manager.close()
 
         logger.info("[APP] Aplicação encerrada")
 
 
-# ============================================================
-# FASTAPI
-# ============================================================
-
-
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description=(
-        "API para coleta de notícias com Playwright " "e cache com retry em background."
-    ),
+    description="API para coleta de notícias com Playwright e cache com retry em background.",
     lifespan=lifespan,
     # dependencies=[Depends(verify_api_key)],
 )
 
 
 # ============================================================
-# FUNÇÃO PARA VERIFICAR CACHE
+# HELPERS
 # ============================================================
-def cache_age_seconds(cache_key: tuple[str, int]) -> int | None:
-    cached = cache.get(cache_key)
+
+
+def now() -> float:
+    return time.monotonic()
+
+
+def get_scraper(source: str):
+    scraper = SCRAPERS.get(source.lower())
+    if scraper is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Fonte não cadastrada",
+                "available_sources": sorted(SCRAPERS),
+            },
+        )
+    return scraper
+
+
+def require_method(scraper, name: str):
+    method = getattr(scraper, name, None)
+    if method is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A fonte '{scraper.source_name}' não suporta esta operação",
+        )
+    return method
+
+
+def get_cache(key: CacheKey) -> tuple[NewsResponse | None, bool]:
+    cached = cache.get(key)
     if cached is None:
-        return None
-
-    timestamp, _ = cached
-
-    now = asyncio.get_running_loop().time()
-    return int(now - timestamp)
-
-
-def get_cache(
-    cache_key: tuple[str, int],
-) -> tuple[NewsResponse | None, bool]:
-
-    cached = cache.get(cache_key)
-
-    if cached is None:
-
         return None, False
 
     timestamp, response = cached
-
-    now = asyncio.get_running_loop().time()
-
-    age = now - timestamp
-
-    is_fresh = age < settings.cache_ttl_seconds
-
+    is_fresh = (now() - timestamp) < settings.cache_ttl_seconds
     return response, is_fresh
 
 
-# ============================================================
-# FUNÇÃO PARA IDENTIFICAR BLOQUEIO
-# ============================================================
+def cache_age_seconds(key: CacheKey) -> int:
+    cached = cache.get(key)
+    if cached is None:
+        return 0
+    return int(now() - cached[0])
+
+
+def cooldown_remaining(key: CacheKey) -> int:
+    remaining = blocked_until.get(key, 0.0) - now()
+    return int(remaining) + 1 if remaining > 0 else 0
+
+
+def set_cache_headers(response: Response, state: str, age: int) -> None:
+    response.headers["X-Cache"] = state
+    response.headers["X-Cache-Age"] = str(age)
+    response.headers["Cache-Control"] = "no-store"
+
+
+def hit_response(response: Response, key: CacheKey, cached: NewsResponse):
+    set_cache_headers(response, "HIT", cache_age_seconds(key))
+    return cached
+
+
+def stale_response(response: Response, key: CacheKey, cached: NewsResponse):
+    age = cache_age_seconds(key)
+    set_cache_headers(response, "STALE", age)
+    return cached.model_copy(update={"stale": True, "age_seconds": age})
 
 
 def is_block_error(exc: Exception) -> bool:
-
     message = str(exc).lower()
-
-    return (
-        "http 403" in message
-        or "status=403" in message
-        or "http 407" in message
-        or "status=407" in message
-        or "proxy" in message
-        and "407" in message
+    return any(
+        marker in message
+        for marker in ("http 403", "status=403", "http 407", "status=407")
     )
+
+
+def store_result(key: CacheKey, result: NewsResponse) -> None:
+    cache[key] = (now(), result)
+    blocked_until.pop(key, None)
+
+
+def build_result(scraper, items) -> NewsResponse:
+    if items is None:
+        raise ScraperError("Scraper não retornou resultado")
+
+    items = list(items)
+    if not items:
+        raise ScraperError("Scraper retornou lista vazia")
+
+    return NewsResponse(
+        source=scraper.source_name,
+        fetched_at=datetime.now(timezone.utc),
+        count=len(items),
+        stale=False,
+        age_seconds=0,
+        items=items,
+    )
+
+
+async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
+    """Sobe o browser e executa o scrape sob semaphore e timeout."""
+    async with scrape_semaphore:
+        await browser_manager.start(*start_args, **start_kwargs)
+
+        if browser_manager.context is None:
+            raise ScraperError("Contexto Playwright não foi criado")
+
+        try:
+            return await asyncio.wait_for(
+                scraper.scrape(browser_manager, limit),
+                timeout=SCRAPE_TIMEOUT,
+            )
+        except asyncio.TimeoutError as exc:
+            raise ScraperError(f"Scrape excedeu {SCRAPE_TIMEOUT}s") from exc
+
+
+async def scrape_news(scraper, limit: int, **start_kwargs) -> NewsResponse:
+    items = await scrape_items(scraper, limit, **start_kwargs)
+    return build_result(scraper, items)
 
 
 # ============================================================
@@ -171,251 +213,87 @@ def is_block_error(exc: Exception) -> bool:
 # ============================================================
 
 
-async def background_refresh(
-    cache_key: tuple[str, int],
-    scraper,
-    limit: int,
-) -> None:
+async def background_refresh(key: CacheKey, scraper, limit: int) -> None:
+    source_key = key[0]
+    started_at = now()
 
-    source_key = cache_key[0]
-
-    logger.warning(
-        "[NEWS] BACKGROUND iniciado: source=%s limit=%s",
-        source_key,
-        limit,
-    )
-
-    started_at = asyncio.get_running_loop().time()
+    logger.info("[NEWS] BACKGROUND iniciado: source=%s limit=%s", source_key, limit)
 
     try:
-
-        # ------------------------------------------------------
-        # Primeira espera
-        # ------------------------------------------------------
-
-        logger.info(
-            "[NEWS] BACKGROUND aguardando %ss antes da tentativa",
-            BACKGROUND_FIRST_RETRY,
-        )
-
         await asyncio.sleep(BACKGROUND_FIRST_RETRY)
 
-        attempt = 0
-
-        for delay in BACKGROUND_BACKOFF:
-
-            elapsed = asyncio.get_running_loop().time() - started_at
-
-            if elapsed >= BACKGROUND_MAX_TIME:
-
+        for attempt, delay in enumerate(BACKGROUND_BACKOFF, start=1):
+            if now() - started_at >= BACKGROUND_MAX_TIME:
                 logger.warning(
-                    "[NEWS] BACKGROUND atingiu limite de tempo: " "source=%s",
-                    source_key,
+                    "[NEWS] BACKGROUND atingiu limite de tempo: source=%s", source_key
                 )
-
                 break
 
-            attempt += 1
-
-            logger.info(
-                "[NEWS] BACKGROUND tentativa=%s source=%s",
-                attempt,
-                source_key,
-            )
-
-            # --------------------------------------------------
-            # Semaphore somente durante o SCRAPE.
-            #
-            # NÃO seguramos semaphore durante sleep.
-            # --------------------------------------------------
+            logger.info("[NEWS] BACKGROUND tentativa=%s source=%s", attempt, source_key)
 
             try:
-
-                async with scrape_semaphore:
-                    await browser_manager.start()
-                    if browser_manager.context is None:
-                        raise ScraperError("Contexto Playwright não foi criado")
-                    logger.info(
-                        "[NEWS] BACKGROUND fazendo scrape: " "source=%s tentativa=%s",
-                        source_key,
-                        attempt,
-                    )
-                    items = await scraper.scrape(
-                        browser_manager,
-                        limit,
-                    )
-
-                # --------------------------------------------------
-                # Resultado válido
-                # --------------------------------------------------
-
-                if items is None:
-
-                    raise ScraperError("Scraper não retornou resultado")
-
-                items = list(items)
-
-                if not items:
-
-                    raise ScraperError("Scraper retornou lista vazia")
-
-                result = NewsResponse(
-                    source=scraper.source_name,
-                    fetched_at=datetime.now(timezone.utc),
-                    count=len(items),
-                    stale=False,
-                    age_seconds=0,
-                    items=items,
-                )
-
-                cache[cache_key] = (
-                    asyncio.get_running_loop().time(),
-                    result,
-                )
-
-                blocked_until.pop(
-                    cache_key,
-                    None,
-                )
-
-                logger.info(
-                    "[NEWS] BACKGROUND SUCESSO: " "source=%s items=%s tentativa=%s",
-                    source_key,
-                    len(items),
-                    attempt,
-                )
-
-                return
-
-            except asyncio.CancelledError:
-
-                logger.info(
-                    "[NEWS] BACKGROUND cancelado: source=%s",
-                    source_key,
-                )
-
-                raise
-
-            except Exception as exc:
-
+                # Mantém o comportamento original: sem useProxy=False aqui
+                result = await scrape_news(scraper, limit)
+            except Exception as exc:  # CancelledError não é capturado aqui
                 logger.warning(
-                    "[NEWS] BACKGROUND falhou: " "source=%s tentativa=%s erro=%s",
+                    "[NEWS] BACKGROUND falhou: source=%s tentativa=%s erro=%s",
                     source_key,
                     attempt,
                     exc,
                 )
 
-                # --------------------------------------------------
-                # Se for 403/407, marca cooldown.
-                # --------------------------------------------------
-
                 if is_block_error(exc):
-                    cooldown = settings.blocked_cooldown_seconds
-
-                    blocked_until[cache_key] = (
-                        asyncio.get_running_loop().time() + cooldown
-                    )
-
+                    blocked_until[key] = now() + settings.blocked_cooldown_seconds
                     logger.warning(
-                        "[NEWS] Bloqueio detectado. "
-                        "Não haverá novas tentativas imediatas. "
-                        "Cooldown=%ss source=%s",
-                        cooldown,
+                        "[NEWS] Bloqueio detectado. Cooldown=%ss source=%s",
+                        settings.blocked_cooldown_seconds,
                         source_key,
                     )
-
                     break
 
-                # --------------------------------------------------
-                # Se ainda houver tempo, espera antes da próxima.
-                # --------------------------------------------------
-
-                elapsed = asyncio.get_running_loop().time() - started_at
-
-                if elapsed >= BACKGROUND_MAX_TIME:
-
+                # Não dorme depois da última tentativa
+                if attempt == len(BACKGROUND_BACKOFF):
                     break
 
-                logger.info(
-                    "[NEWS] BACKGROUND aguardando %ss " "antes da próxima tentativa",
-                    delay,
-                )
-
+                logger.info("[NEWS] BACKGROUND aguardando %ss", delay)
                 await asyncio.sleep(delay)
+                continue
 
-        logger.error(
-            "[NEWS] BACKGROUND terminou sem sucesso: " "source=%s",
-            source_key,
-        )
+            store_result(key, result)
+            logger.info(
+                "[NEWS] BACKGROUND SUCESSO: source=%s items=%s tentativa=%s",
+                source_key,
+                result.count,
+                attempt,
+            )
+            return
+
+        logger.error("[NEWS] BACKGROUND terminou sem sucesso: source=%s", source_key)
 
     except asyncio.CancelledError:
-
-        logger.info(
-            "[NEWS] BACKGROUND cancelado: source=%s",
-            source_key,
-        )
-
+        logger.info("[NEWS] BACKGROUND cancelado: source=%s", source_key)
         raise
 
     except Exception:
-
-        logger.exception(
-            "[NEWS] Erro inesperado no BACKGROUND: source=%s",
-            source_key,
-        )
+        logger.exception("[NEWS] Erro inesperado no BACKGROUND: source=%s", source_key)
 
     finally:
-
-        background_tasks.pop(
-            cache_key,
-            None,
-        )
-
-        logger.info(
-            "[NEWS] BACKGROUND finalizado: source=%s",
-            source_key,
-        )
+        # Só remove se a entrada ainda for esta task
+        if background_tasks.get(key) is asyncio.current_task():
+            background_tasks.pop(key, None)
+        logger.info("[NEWS] BACKGROUND finalizado: source=%s", source_key)
 
 
-# ============================================================
-# INICIA BACKGROUND REFRESH
-# ============================================================
+def start_background_refresh(key: CacheKey, scraper, limit: int) -> None:
+    existing = background_tasks.get(key)
+    if existing is not None and not existing.done():
+        logger.info("[NEWS] BACKGROUND já está rodando: %s", key)
+        return
 
-
-def start_background_refresh(
-    cache_key: tuple[str, int],
-    scraper,
-    limit: int,
-) -> None:
-
-    existing = background_tasks.get(cache_key)
-
-    # Já existe refresh rodando
-    if existing is not None:
-
-        if not existing.done():
-
-            logger.info(
-                "[NEWS] BACKGROUND já está rodando: %s",
-                cache_key,
-            )
-
-            return
-
-    task = asyncio.create_task(
-        background_refresh(
-            cache_key=cache_key,
-            scraper=scraper,
-            limit=limit,
-        )
+    background_tasks[key] = asyncio.create_task(
+        background_refresh(key=key, scraper=scraper, limit=limit)
     )
-
-    background_tasks[cache_key] = task
-
-    logger.info(
-        "[NEWS] BACKGROUND agendado: %s",
-        cache_key,
-    )
+    logger.info("[NEWS] BACKGROUND agendado: %s", key)
 
 
 # ============================================================
@@ -427,10 +305,7 @@ public_router = APIRouter()
 
 @public_router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        version=settings.app_version,
-    )
+    return HealthResponse(status="ok", version=settings.app_version)
 
 
 app.include_router(public_router)
@@ -439,39 +314,20 @@ app.include_router(public_router)
 # ============================================================
 # TESTE
 # ============================================================
+
+
 @app.get("/teste")
 async def teste(
     source: Annotated[str, Query(min_length=1, max_length=30)] = "teste",
-    ticker: str = Query(
-        "PETR4",
-        min_length=1,
-    ),
 ):
-    source_key = source.lower()
+    scraper = get_scraper(source)
 
-    scraper = SCRAPERS.get(source_key)
-    if scraper is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "message": "Fonte não cadastrada",
-                "available_sources": sorted(SCRAPERS),
-            },
-        )
-    async with scrape_semaphore:
-        try:
-            await browser_manager.start("./perfil_bloomberg", useProxy=False)
+    try:
+        items = await scrape_items(scraper, 30, "./perfil_broadcast", useProxy=False)
+    except ScraperError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-            if browser_manager.context is None:  # <-- verifica context, não o manager
-                raise ScraperError("Contexto Playwright não foi criado")
-
-            dados = await scraper.scrape(browser_manager, 30)
-            return {"items": dados}
-
-        except asyncio.CancelledError:
-            raise
-        except ScraperError:
-            raise
+    return {"items": items}
 
 
 # ============================================================
@@ -479,319 +335,108 @@ async def teste(
 # ============================================================
 
 
-@app.get(
-    "/news",
-    response_model=NewsResponse,
-)
+@app.get("/news", response_model=NewsResponse)
 async def news(
     response: Response,
-    source: str = Query(
-        "investing",
-        min_length=1,
-        max_length=30,
-    ),
-    limit: int = Query(
-        20,
-        ge=1,
-        le=settings.max_news_items,
-    ),
+    source: str = Query("investing", min_length=1, max_length=30),
+    limit: int = Query(20, ge=1, le=settings.max_news_items),
 ) -> NewsResponse:
     source_key = source.lower()
-    scraper = SCRAPERS.get(source_key)
+    scraper = get_scraper(source_key)
+    key: CacheKey = (source_key, limit)
 
-    if scraper is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "message": "Fonte não cadastrada",
-                "available_sources": sorted(SCRAPERS),
-            },
-        )
-
-    cache_key = (
-        source_key,
-        limit,
-    )
-
-    # ========================================================
-    # 1. CACHE
-    # ========================================================
-
-    cached, is_fresh = get_cache(cache_key)
+    # 1. CACHE FRESCO
+    cached, is_fresh = get_cache(key)
 
     if cached is not None and is_fresh:
-        logger.info(
-            "[NEWS] CACHE HIT: source=%s limit=%s",
-            source_key,
-            limit,
-        )
-        age = cache_age_seconds(cache_key) or 0
-        response.headers["X-Cache"] = "HIT"
-        response.headers["X-Cache-Age"] = str(age)
-        response.headers["Cache-Control"] = "no-store"
-        return cached
+        logger.info("[NEWS] CACHE HIT: source=%s limit=%s", source_key, limit)
+        return hit_response(response, key, cached)
 
-    # ========================================================
-    # 2. CACHE STALE
-    # ========================================================
+    # 2. CACHE STALE: devolve na hora e atualiza em background
+    if cached is not None:
+        remaining = cooldown_remaining(key)
 
-    if cached is not None and not is_fresh:
-        now = asyncio.get_running_loop().time()
-
-        cooldown_end = blocked_until.get(
-            cache_key,
-            0.0,
-        )
-
-        if now < cooldown_end:
-            remaining = int(cooldown_end - now) + 1
-
+        if remaining:
             logger.info(
-                "[NEWS] Cache stale, mas fonte está em cooldown: "
-                "source=%s restante=%ss",
+                "[NEWS] Cache stale, fonte em cooldown: source=%s restante=%ss",
                 source_key,
                 remaining,
             )
-            age = cache_age_seconds(cache_key) or 0
-            response.headers["X-Cache"] = "STALE"
-            response.headers["X-Cache-Age"] = str(age)
-            response.headers["Cache-Control"] = "no-store"
-            return cached.model_copy(update={"stale": True, "age_seconds": age})
+        else:
+            logger.info("[NEWS] CACHE STALE: source=%s limit=%s", source_key, limit)
+            start_background_refresh(key, scraper, limit)
 
-        logger.info(
-            "[NEWS] CACHE STALE: source=%s limit=%s",
-            source_key,
-            limit,
-        )
+        return stale_response(response, key, cached)
 
-        start_background_refresh(
-            cache_key=cache_key,
-            scraper=scraper,
-            limit=limit,
-        )
-        age = cache_age_seconds(cache_key) or 0
-        response.headers["X-Cache"] = "STALE"
-        response.headers["X-Cache-Age"] = str(age)
-        response.headers["Cache-Control"] = "no-store"
-        return cached.model_copy(update={"stale": True, "age_seconds": age})
+    # 3. SEM CACHE + COOLDOWN
+    remaining = cooldown_remaining(key)
 
-    # ========================================================
-    # 3. VERIFICA COOLDOWN
-    # ========================================================
-
-    now = asyncio.get_running_loop().time()
-
-    cooldown_end = blocked_until.get(
-        cache_key,
-        0.0,
-    )
-
-    if now < cooldown_end:
-        remaining = int(cooldown_end - now) + 1
+    if remaining:
         logger.warning(
-            "[NEWS] Fonte em cooldown: " "source=%s restante=%ss",
-            source_key,
-            remaining,
+            "[NEWS] Fonte em cooldown: source=%s restante=%ss", source_key, remaining
         )
-
-        # ----------------------------------------------------
-        # Se tivermos cache, devolve ele.
-        # ----------------------------------------------------
-
-        if cached is not None:
-            return cached.model_copy(update={"stale": True})
-
-        # ----------------------------------------------------
-        # Sem cache: informa usuário para tentar depois.
-        # ----------------------------------------------------
-
         raise HTTPException(
             status_code=503,
-            detail=(
-                "A fonte está temporariamente indisponível. "
-                "Uma nova tentativa está sendo processada "
-                "em background. Tente novamente em até 1 minuto."
-            ),
+            detail="A fonte está temporariamente indisponível. Tente novamente em instantes.",
             headers={"Retry-After": str(min(remaining, 60))},
         )
 
-    # ========================================================
-    # 4. CACHE MISS
-    # ========================================================
+    # 4. CACHE MISS: um scrape por chave
+    logger.info("[NEWS] CACHE MISS: source=%s limit=%s", source_key, limit)
 
-    logger.info(
-        "[NEWS] CACHE MISS: source=%s limit=%s",
-        source_key,
-        limit,
-    )
+    lock = key_locks.setdefault(key, asyncio.Lock())
 
-    # ========================================================
-    # 5. SCRAPE INICIAL
-    # ========================================================
-
-    async with scrape_semaphore:
-
-        # ----------------------------------------------------
-        # Outra requisição pode ter preenchido cache
-        # enquanto aguardávamos o semaphore.
-        # ----------------------------------------------------
-
-        cached, is_fresh = get_cache(cache_key)
-
+    async with lock:
+        # Outra request pode ter preenchido o cache enquanto esperávamos
+        cached, is_fresh = get_cache(key)
         if cached is not None and is_fresh:
-
             logger.info("[NEWS] CACHE preenchido enquanto aguardava")
-            age = cache_age_seconds(cache_key) or 0
-            response.headers["X-Cache"] = "HIT"
-            response.headers["X-Cache-Age"] = str(age)
-            response.headers["Cache-Control"] = "no-store"
-            return cached
+            return hit_response(response, key, cached)
 
         try:
-
-            await browser_manager.start()
-
-            if browser_manager.context is None:
-                raise ScraperError("Contexto Playwright não foi criado")
-
             logger.info(
-                "[NEWS] Fazendo scrape inicial: " "source=%s limit=%s",
-                source_key,
-                limit,
+                "[NEWS] Fazendo scrape inicial: source=%s limit=%s", source_key, limit
             )
+            result = await scrape_news(scraper, limit, data_dir=source_key)
 
-            items = await scraper.scrape(
-                browser_manager,  # type: ignore
-                limit,
-            )
+        except Exception as exc:  # CancelledError passa direto
+            blocked = is_block_error(exc)
 
-        except asyncio.CancelledError:
-
-            raise
-
-        except ScraperError as exc:
-            logger.warning(
-                "[NEWS] Scrape inicial falhou: source=%s erro=%s",
-                source_key,
-                exc,
-            )
-
-            if is_block_error(exc):
-                blocked_until[cache_key] = (
-                    asyncio.get_running_loop().time()
-                    + settings.blocked_cooldown_seconds
+            if isinstance(exc, ScraperError):
+                logger.warning(
+                    "[NEWS] Scrape inicial falhou: source=%s erro=%s", source_key, exc
                 )
+            else:
+                logger.exception("[NEWS] Erro inesperado: source=%s", source_key)
 
-                start_background_refresh(
-                    cache_key=cache_key,
-                    scraper=scraper,
-                    limit=limit,
-                )
+            if blocked:
+                blocked_until[key] = now() + settings.blocked_cooldown_seconds
+                start_background_refresh(key, scraper, limit)
 
-                cached, _ = get_cache(cache_key)
-                if cached is not None:
-                    age = cache_age_seconds(cache_key) or 0
-                    response.headers["X-Cache"] = "STALE"
-                    response.headers["X-Cache-Age"] = str(age)
-                    response.headers["Cache-Control"] = "no-store"
-                    return cached.model_copy(update={"stale": True, "age_seconds": age})
+            cached, _ = get_cache(key)
+            if cached is not None:
+                return stale_response(response, key, cached)
 
+            if blocked:
                 raise HTTPException(
                     status_code=503,
-                    detail=(
-                        "A fonte recusou temporariamente a consulta. "
-                        "Tente novamente em até 1 minuto."
-                    ),
+                    detail="A fonte recusou temporariamente a consulta. Tente novamente em até 1 minuto.",
                     headers={"Retry-After": "60"},
                 ) from exc
 
-            cached, _ = get_cache(cache_key)
-            if cached is not None:
-                age = cache_age_seconds(cache_key) or 0
-                response.headers["X-Cache"] = "STALE"
-                response.headers["X-Cache-Age"] = str(age)
-                response.headers["Cache-Control"] = "no-store"
-                return cached.model_copy(update={"stale": True, "age_seconds": age})
+            status = 502 if isinstance(exc, ScraperError) else 503
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-        except Exception as exc:
-
-            logger.exception(
-                "[NEWS] Erro inesperado: source=%s",
-                source_key,
-            )
-
-            cached, _ = get_cache(cache_key)
-
-            if cached is not None:
-                age = cache_age_seconds(cache_key) or 0
-                response.headers["X-Cache"] = "STALE"
-                response.headers["X-Cache-Age"] = str(age)
-                response.headers["Cache-Control"] = "no-store"
-                return cached.model_copy(update={"stale": True, "age_seconds": age})
-
-            raise HTTPException(
-                status_code=503,
-                detail=str(exc),
-            ) from exc
-
-        # ========================================================
-        # 6. VALIDA RESULTADO
-        # ========================================================
-
-        if items is None:
-
-            raise HTTPException(
-                status_code=503,
-                detail=("O scraper não retornou nenhuma notícia."),
-            )
-
-        items = list(items)
-
-        if not items:
-
-            raise HTTPException(
-                status_code=503,
-                detail=("O scraper retornou uma lista vazia."),
-            )
-
-        # ========================================================
-        # 7. MONTA RESPONSE
-        # ========================================================
-
-        result = NewsResponse(
-            source=scraper.source_name,
-            fetched_at=datetime.now(timezone.utc),
-            count=len(items),
-            stale=False,
-            age_seconds=0,
-            items=items,
-        )
-
-        # ========================================================
-        # 8. SALVA CACHE
-        # ========================================================
-
-        cache[cache_key] = (
-            asyncio.get_running_loop().time(),
-            result,
-        )
-
-        blocked_until.pop(
-            cache_key,
-            None,
-        )
+        store_result(key, result)
 
         logger.info(
-            "[NEWS] Cache atualizado: " "source=%s limit=%s items=%s",
+            "[NEWS] Cache atualizado: source=%s limit=%s items=%s",
             source_key,
             limit,
-            len(items),
+            result.count,
         )
-        response.headers["X-Cache"] = "MISS"
-        response.headers["X-Cache-Age"] = "0"
-        response.headers["Cache-Control"] = "no-store"
+
+        set_cache_headers(response, "MISS", 0)
         return result
 
 
@@ -802,30 +447,20 @@ async def news(
 
 @app.get("/tickers")
 async def fundamentus(
-    source: str = Query(
-        "fundamentus",
-        min_length=1,
-        max_length=30,
-    ),
-    ticker: str = Query(
-        "PETR4",
-        min_length=1,
-    ),
+    source: str = Query("fundamentus", min_length=1, max_length=30),
+    ticker: str = Query("PETR4", min_length=1),
 ):
-    source_key = source.lower()
-    scraper = SCRAPERS.get(source_key)
-    dados = await scraper.searchFundamentusHttpx(ticker.upper())
-    # await browser_manager.start(useProxy=False)
-    # if browser_manager.context is None:
-    #     raise ScraperError("Contexto Playwright não foi criado")
-    # dados = await scraper.search(browser_manager.context, ticker.upper())
-    # async with browser_manager.scrape_session() as (page, context):
-    #     dados = await scraper.search(context, ticker.upper())
-    return dados
+    scraper = get_scraper(source)
+    search = require_method(scraper, "searchFundamentusHttpx")
+
+    try:
+        return await search(ticker.upper())
+    except ScraperError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/tickers/historical")
-async def fundamentusHistorical(
+async def fundamentus_historical(
     source: str = Query(
         "fundamentus",
         min_length=1,
@@ -835,17 +470,18 @@ async def fundamentusHistorical(
     ticker: str = Query(
         "PETR4", min_length=1, description="Código do ativo (ex: PETR4, VALE3)"
     ),
-    range: str = Query(
+    range_: str = Query(
         "1mo",
+        alias="range",
         min_length=1,
         max_length=10,
-        description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
+        description="Período total dos dados (1mo, 6mo, 1y, etc)",
     ),
     interval: str = Query(
         "1mo",
         min_length=1,
         max_length=10,
-        description="Intervalo dos dados (1d, 1wk, 1mo, etc)",
+        description="Intervalo entre os pontos (1d, 1wk, 1mo, etc)",
     ),
     order: str = Query(
         "asc",
@@ -854,27 +490,19 @@ async def fundamentusHistorical(
         description="Ordem de classificação (asc ou desc)",
     ),
 ):
-    if order.lower() not in ["asc", "desc"]:
+    order = order.lower()
+    if order not in ("asc", "desc"):
         raise HTTPException(
             status_code=400, detail="O parâmetro 'order' deve ser 'asc' ou 'desc'"
         )
-    source_key = source.lower()
-    scraper = SCRAPERS.get(source_key)
-    order_map = {"asc": False, "desc": True}
-    is_descending = order_map.get(order.lower(), False)
 
-    # await browser_manager.start()
-    # if browser_manager.context is None:
-    #     raise ScraperError("Contexto Playwright não foi criado")
-    # dados = await scraper.scrape(
-    #     browser_manager.context, ticker.upper(), range, is_descending
-    # )
-    dados = await scraper.historicalFundamentusHttpx(
-        ticker.upper(), range, is_descending
-    )
-    # async with browser_manager.scrape_session() as (page, context):
-    #     dados = await scraper.scrape(context, ticker.upper(), range, is_descending)
-    return dados
+    scraper = get_scraper(source)
+    historical = require_method(scraper, "historicalFundamentusHttpx")
+
+    try:
+        return await historical(ticker.upper(), range_, order == "desc")
+    except ScraperError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 # ============================================================
@@ -884,6 +512,4 @@ async def fundamentusHistorical(
 
 @app.get("/sources")
 async def sources() -> dict[str, list[str]]:
-    return {
-        "sources": sorted(SCRAPERS),
-    }
+    return {"sources": sorted(SCRAPERS)}

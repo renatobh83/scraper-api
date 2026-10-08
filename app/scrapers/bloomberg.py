@@ -29,24 +29,29 @@ class BloombergHeadlinesScraper(NewsScraper):
         await stealth.apply_stealth_async(page)
         try:
             logger.info("[bloomberg] vai chamar page.goto")
-            response = await page.goto(self.page_url, wait_until="domcontentloaded", timeout=30000)
+            response = await page.goto(
+                self.page_url, wait_until="domcontentloaded", timeout=30000
+            )
 
             logger.info("[bloomberg] STATUS: %s", response.status if response else None)
             status = response.status if response else None
-           
-            
+
             if status is not None and status >= 400:
                 # await page.wait_for_timeout(3000)  # 3s
-             
-                iframe_sel = 'iframe[title="Human verification challenge"]'   
+
+                iframe_sel = 'iframe[title="Human verification challenge"]'
                 iframe_el = page.locator(iframe_sel)
-                iframe_style = await page.locator('iframe[title="Human verification challenge"]').get_attribute("style")
+                iframe_style = await page.locator(
+                    'iframe[title="Human verification challenge"]'
+                ).get_attribute("style")
                 logger.info("[Boomerang] iframe style: %r", iframe_style)
 
                 try:
                     await iframe_el.wait_for(state="visible", timeout=20000)
                 except PlaywrightError as e:
-                    logger.exception("[Boomerang] iframe do captcha não ficou visível: %s", e)
+                    logger.exception(
+                        "[Boomerang] iframe do captcha não ficou visível: %s", e
+                    )
                     return False
 
                 logger.info("[Boomerang] iframe visível no parent.")
@@ -60,18 +65,17 @@ class BloombergHeadlinesScraper(NewsScraper):
                 #     lbl = await el.get_attribute("aria-label")
                 #     txt = await el.inner_text()
                 #     logger.info("[Boomerang] iframe button[%s] aria-label=%r text=%r", i, lbl, txt)
-                    
-                title = await page.title()       
+
+                title = await page.title()
 
                 # await page.pause()
                 try:
                     pass
                     # await botao.wait_for(state="attached", timeout=15000)
                     logger.info("[Boomerang] Botão anexado ao DOM.")
-                    
+
                     box = await botao.first.bounding_box()
                     logger.info("[Boomerang] Bounding box: %s", box)
-                  
 
                     if not box or box["width"] == 0 or box["height"] == 0:
                         logger.warning("[Boomerang] Bounding box inválido.")
@@ -86,7 +90,7 @@ class BloombergHeadlinesScraper(NewsScraper):
                     await page.wait_for_timeout(3000)
                     await page.mouse.up()
                 except Exception as e:
-                        logger.warning(f"[bloomberg] Erro ao tentar clicar no captcha: {e}")
+                    logger.warning(f"[bloomberg] Erro ao tentar clicar no captcha: {e}")
 
                 logger.warning(
                     "bloomberg bloqueou a navegação: status=%s url=%s title=%r",
