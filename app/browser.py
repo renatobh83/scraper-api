@@ -61,7 +61,7 @@ class BrowserManager:
 
             kwargs = dict(
                 user_data_dir=f"perfil_{data_dir}",
-                channel="chrome",
+              #  channel="chrome",
                 headless=self.headless,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
