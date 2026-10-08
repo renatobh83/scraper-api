@@ -41,7 +41,7 @@ key_locks: dict[CacheKey, asyncio.Lock] = {}
 # ============================================================
 
 BACKGROUND_FIRST_RETRY = 0.5
-BACKGROUND_BACKOFF = [5, 10, 20, 30]
+BACKGROUND_BACKOFF = [5]
 BACKGROUND_MAX_TIME = 60
 
 # Tempo máximo de um scrape (segura o semaphore, então precisa ter limite)
