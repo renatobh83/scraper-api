@@ -68,10 +68,11 @@ class BrowserManager:
                 self._playwright = await async_playwright().start()
 
             kwargs = dict(
-                user_data_dir=f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
+                user_data_dir=None if useProxy and self.proxy else f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
                 headless=self.headless,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
+                
                 locale="pt-BR",
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,

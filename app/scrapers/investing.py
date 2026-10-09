@@ -14,7 +14,8 @@ from app.utils.human_behavior import human_scroll, jitter
 from app.utils.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
 
-
+import random
+import asyncio
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -43,34 +44,21 @@ class InvestingHeadlinesScraper(NewsScraper):
     ) -> list[NewsItem]:
         # page = await context.new_page()
         logger.info("[Investing] Abrindo pagina")
-        stealth = Stealth()
-        await stealth.apply_stealth_async(page)
-        page.set_default_timeout(settings.selector_timeout_ms)
-        page.set_default_navigation_timeout(settings.navigation_timeout_ms)
+        # stealth = Stealth()
+        # await stealth.apply_stealth_async(page)
 
         try:
             logger.info("[Investing] vai chamar page.goto")
-            response = await page.goto(
-                self.page_url, wait_until="commit"
-            )
-       
-            await page.wait_for_timeout(5000)
+         
+            await page.goto(self.page_url, wait_until="domcontentloaded")
+            if not await self.resolver_cloudflare(page):
+                await self._save_debug_artifacts(page, "turnstile_falhou")
+                raise ScraperError("Turnstile não resolvido (o desafio reapareceu após o clique).")
 
-            logger.info("[Investing] STATUS: %s", response.status if response else None)
-            status = response.status if response else None
-            if status is not None and status >= 400:
-                title = await page.title()
-                # await self._save_debug_artifacts(page, f"http_{status}")
-                logger.warning(
-                    "Investing bloqueou a navegação: status=%s url=%s title=%r",
-                    status,
-                    page.url,
-                    title,
-                )
-                raise ScraperError(
-                    f"Investing respondeu HTTP {status} mesmo com Playwright "
-                    f"(url={page.url}, title={title!r})."
-                )
+
+            # logger.info("[Investing] STATUS: %s", response.status if response else None)
+            # status = response.status if response else None
+           
 
             # O seletor final pode ser ajustado após inspecionar a estrutura real
             # que a Investing entrega para o seu IP/região.
@@ -110,58 +98,61 @@ class InvestingHeadlinesScraper(NewsScraper):
         finally:
             logger.info("[Investing] Fechando pagina")
             await page.close()
-        
-    async def try_solve_turnstile(self, page):
-        """
-        Tenta clicar no checkbox do Cloudflare Turnstile.
-        O widget fica dentro de um iframe aninhado.
-        """
-        # 1. Localiza o iframe externo
-        cf_frame = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
-        
-        # 2. Tenta múltiplos seletores para o checkbox, do mais específico ao mais genérico
-        seletores = [
-            cf_frame.frame_locator("iframe").locator('input[type="checkbox"]'),          # iframe aninhado
-            cf_frame.frame_locator("iframe").locator('.ctp-checkbox-label'),              # label
-            cf_frame.locator('input[type="checkbox"]'),                                    # se não estiver aninhado
-            cf_frame.locator('.ctp-checkbox-label'),                                      # label direto
-            cf_frame.locator('#challenge-stage input'),                                    # fallback
-        ]
 
-        checkbox = None
-        for sel in seletores:
-            print(sel)
-            try:
-                # Espera até 3s pelo elemento
-                await sel.wait_for(state="attached", timeout=10000)
-                # Verifica se é visível e clicável
-                if await sel.is_visible():
-                    checkbox = sel
-                    logger.info(f"[Investing] Checkbox encontrado com: {sel}")
-                    break
-            except Exception:
-                continue
-        
-        if checkbox is None:
-            logger.warning("[Investing] Nenhum seletor de checkbox funcionou.")
-            return False
-        
-        # 3. Tenta clicar (com fallback para coordenadas)
+    async def _desafio_ativo(self, page) -> bool:
         try:
-            await checkbox.click(timeout=10000)
-            logger.info("[Investing] Checkbox clicado com sucesso.")
-            return True
-        except Exception as e:
-            logger.warning(f"[Investing] Clique falhou: {e}. Tentando por coordenadas...")
+            title = await page.title()
+        except PlaywrightError:
+            return True  # navegando, ainda no desafio
+        return "Um momento" in title or "Just a moment" in title
+
+    async def resolver_cloudflare(self, page, tentativas: int = 3) -> bool:
+        for n in range(1, tentativas + 1):
+            if not await self._desafio_ativo(page):
+                return True
+
+            logger.info("[Investing] Turnstile tentativa %s/%s", n, tentativas)
+            # deixa o widget carregar e "assentar" antes de clicar
+            await page.wait_for_timeout(random.randint(2500, 4000))
+
+            if not await self.clicar_turnstile(page, timeout=15):
+                continue
+
             try:
-                box = await checkbox.bounding_box()
-                if box:
-                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-                    logger.info("[Investing] Clique por coordenadas executado.")
-                    return True
-            except Exception as e2:
-                logger.warning(f"[Investing] Clique por coordenadas também falhou: {e2}")
+                await page.wait_for_function(
+                    "!document.title.includes('Um momento') && "
+                    "!document.title.includes('Just a moment')",
+                    timeout=20000,
+                )
+                return True
+            except PlaywrightError:
+                logger.warning("[Investing] Desafio reapareceu, tentando de novo")
+
+        return not await self._desafio_ativo(page)       
         
+    
+    async def clicar_turnstile(self, page, timeout=30):
+        """Procura o iframe do Turnstile e clica no checkbox. Retorna True se clicou."""
+        for _ in range(timeout * 2):
+            for frame in page.frames:
+                if "challenges.cloudflare.com" in frame.url:
+                    try:
+                        el = await frame.frame_element()
+                        box = await el.bounding_box()
+                    except Exception:
+                        box = None
+
+                    if box and box["width"] > 0:
+                        # o checkbox fica ~30px da borda esquerda, centralizado na vertical
+                        x = box["x"] + 30 + random.uniform(-3, 3)
+                        y = box["y"] + box["height"] / 2 + random.uniform(-3, 3)
+
+                        await page.mouse.move(x - 120, y - 40, steps=15)
+                        await page.mouse.move(x, y, steps=20)
+                        await asyncio.sleep(random.uniform(0.2, 0.5))
+                        await page.mouse.click(x, y)
+                        return True
+            await asyncio.sleep(0.5)
         return False
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:
