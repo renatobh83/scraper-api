@@ -30,4 +30,4 @@ while true; do
 
     echo "[entrypoint] uvicorn encerrou, aguardando ${GRACE_SECONDS}s antes de reiniciar"
     sleep "$GRACE_SECONDS"
-done:
+done
