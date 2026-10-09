@@ -26,7 +26,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://localhost:8000/health || exit 1
 
 # Executa o Chromium como usuário sem privilégios.
-USER pwuser
+# USER pwuser
 
 EXPOSE 8000
 
