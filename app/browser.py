@@ -71,7 +71,7 @@ class BrowserManager:
                 user_data_dir=f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
                 headless=self.headless,
                 slow_mo=150 if self.debug else 0,
-                # proxy=self.proxy if useProxy and self.proxy else None,
+                proxy=self.proxy if useProxy and self.proxy else None,
                 locale="pt-BR",
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
