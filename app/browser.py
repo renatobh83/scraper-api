@@ -109,7 +109,7 @@ class BrowserManager:
                     # "--memory-pressure-off",
                 ],
             )
-            
+            kwargs["service_workers"] = "block" if not useProxy else "allow"
             if self.user_agent:
                 kwargs["user_agent"] = self.user_agent
             

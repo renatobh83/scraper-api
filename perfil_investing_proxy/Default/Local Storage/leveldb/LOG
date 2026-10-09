@@ -1,2 +1,3 @@
-2026/10/08-21:10:50.363 12caf Creating DB /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Local Storage/leveldb since it was missing.
-2026/10/08-21:10:50.393 12caf Reusing MANIFEST /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Local Storage/leveldb/MANIFEST-000001
+2026/10/09-06:52:57.955 20719 Reusing MANIFEST /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Local Storage/leveldb/MANIFEST-000001
+2026/10/09-06:52:57.982 20719 Recovering log #3
+2026/10/09-06:52:57.983 20719 Reusing old log /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Local Storage/leveldb/000003.log 
