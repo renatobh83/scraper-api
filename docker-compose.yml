@@ -7,6 +7,9 @@ services:
     ipc: host
     expose:
       - "8000"
+    volumes:
+      - "/etc/localtime:/etc/localtime:ro"
+      - "/etc/timezone:/etc/timezone:ro" 
     networks:
       aplicacao:
         ipv4_address: 172.18.0.6
