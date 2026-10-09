@@ -1,7 +1,7 @@
 services:
   news-api:
     build: .
-    container_name: news-scraper-api
+    container_name: scrapy
     restart: unless-stopped
     init: true
     ipc: host
