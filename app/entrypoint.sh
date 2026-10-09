@@ -12,7 +12,8 @@ while true; do
         --port 8000 \
         --workers 1 \
         --limit-concurrency 2 \
-        --no-access-log &
+        --no-access-log \
+        --log-config /app/log_config.yaml &
     UVICORN_PID=$!
 
     # espera X segundos OU até o uvicorn morrer sozinho (o que vier primeiro)
