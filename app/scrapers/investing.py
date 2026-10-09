@@ -35,10 +35,10 @@ class InvestingHeadlinesScraper(NewsScraper):
 
     async def scrape(
         self,
-        context: BrowserManager,
+        page,
         limit: int,
     ) -> list[NewsItem]:
-        page = await context.new_page()
+        # page = await context.new_page()
         logger.info("[Investing] Abrindo pagina")
         stealth = Stealth()
         await stealth.apply_stealth_async(page)

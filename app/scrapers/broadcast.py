@@ -20,10 +20,10 @@ class BroadcastHeadlinesScraper(NewsScraper):
 
     async def scrape(
         self,
-        context: BrowserManager,
+        page,
         limit: int,
     ):
-        page = await context.new_page()
+        # page = await context.new_page()
         logger.info("[broadcast] Abrindo pagina")
         stealth = Stealth()
         await stealth.apply_stealth_async(page)
