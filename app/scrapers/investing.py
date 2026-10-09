@@ -14,6 +14,9 @@ from app.utils.human_behavior import human_scroll, jitter
 from app.utils.models import NewsItem
 from app.scrapers.base import NewsScraper, ScraperError
 
+
+
+
 logger = logging.getLogger("uvicorn.error")
 
 SELECTOR_WAIT_TIMEOUT_MS = 30000
@@ -48,31 +51,10 @@ class InvestingHeadlinesScraper(NewsScraper):
         try:
             logger.info("[Investing] vai chamar page.goto")
             response = await page.goto(
-                self.page_url, wait_until="commit", timeout=SELECTOR_WAIT_TIMEOUT_MS
+                self.page_url, wait_until="commit"
             )
-            try:
-                await page.wait_for_function(
-                    "document.title && !/Um momento|just a moment/i.test(document.title)",
-                    timeout=30000,
-                )
-            except Exception as e:
-                logger.warning("[Investing] page.goto falhou: %r", e)
-                await page.screenshot(path="challenge.png")
-            await jitter(1.0, 2.5)
-
-            await human_scroll(
-                page,
-                150,
-                400,
-            )
-
-            await jitter(0.5, 1.5)
-
-            await human_scroll(
-                page,
-                250,
-                700,
-            )
+       
+            await page.wait_for_timeout(5000)
 
             logger.info("[Investing] STATUS: %s", response.status if response else None)
             status = response.status if response else None
@@ -128,6 +110,59 @@ class InvestingHeadlinesScraper(NewsScraper):
         finally:
             logger.info("[Investing] Fechando pagina")
             await page.close()
+        
+    async def try_solve_turnstile(self, page):
+        """
+        Tenta clicar no checkbox do Cloudflare Turnstile.
+        O widget fica dentro de um iframe aninhado.
+        """
+        # 1. Localiza o iframe externo
+        cf_frame = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
+        
+        # 2. Tenta múltiplos seletores para o checkbox, do mais específico ao mais genérico
+        seletores = [
+            cf_frame.frame_locator("iframe").locator('input[type="checkbox"]'),          # iframe aninhado
+            cf_frame.frame_locator("iframe").locator('.ctp-checkbox-label'),              # label
+            cf_frame.locator('input[type="checkbox"]'),                                    # se não estiver aninhado
+            cf_frame.locator('.ctp-checkbox-label'),                                      # label direto
+            cf_frame.locator('#challenge-stage input'),                                    # fallback
+        ]
+
+        checkbox = None
+        for sel in seletores:
+            print(sel)
+            try:
+                # Espera até 3s pelo elemento
+                await sel.wait_for(state="attached", timeout=10000)
+                # Verifica se é visível e clicável
+                if await sel.is_visible():
+                    checkbox = sel
+                    logger.info(f"[Investing] Checkbox encontrado com: {sel}")
+                    break
+            except Exception:
+                continue
+        
+        if checkbox is None:
+            logger.warning("[Investing] Nenhum seletor de checkbox funcionou.")
+            return False
+        
+        # 3. Tenta clicar (com fallback para coordenadas)
+        try:
+            await checkbox.click(timeout=10000)
+            logger.info("[Investing] Checkbox clicado com sucesso.")
+            return True
+        except Exception as e:
+            logger.warning(f"[Investing] Clique falhou: {e}. Tentando por coordenadas...")
+            try:
+                box = await checkbox.bounding_box()
+                if box:
+                    await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    logger.info("[Investing] Clique por coordenadas executado.")
+                    return True
+            except Exception as e2:
+                logger.warning(f"[Investing] Clique por coordenadas também falhou: {e2}")
+        
+        return False
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:
         """Salva evidências locais sem registrar credenciais nos logs."""

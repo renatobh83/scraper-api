@@ -189,6 +189,8 @@ def build_result(scraper, items) -> NewsResponse:
 async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
     """Sobe o browser e executa o scrape sob semaphore e timeout."""
     async with scrape_semaphore:
+        logger.info("[Scrape] Semaphore adquirido (ativos: %s)", 
+                settings.max_concurrent_scrapes - scrape_semaphore._value)
         key = await browser_manager.start(**start_kwargs)
         page = await browser_manager.new_page(key)
         try:
@@ -196,10 +198,24 @@ async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
                 scraper.scrape(page, limit),
                 timeout=SCRAPE_TIMEOUT,
             )
+        
+        except (asyncio.TimeoutError, ScraperError) as exc:
+            # Tenta fechar a página (se ela existir)
+            if 'page' in locals() and not page.is_closed():
+                await page.close()
+            # Força o fechamento do contexto para limpar conexões pendentes
+            if key in browser_manager._contexts:
+                await browser_manager.close_context(key)
+            raise ScraperError(f"Scrape falhou: {exc}") from exc
         except asyncio.TimeoutError as exc:
             raise ScraperError(f"Scrape excedeu {SCRAPE_TIMEOUT}s") from exc
         finally:
-            await page.close()
+            logger.info("[Scrape] Semaphore liberando (ativos restantes: %s)",
+                    settings.max_concurrent_scrapes - scrape_semaphore._value - 1)
+            try:
+                await asyncio.wait_for(page.close(), timeout=5)
+            except Exception as e:
+                logger.warning(f"[Scrape] page.close() falhou ou demorou: {e}")
 
 
 async def scrape_news(scraper, limit: int, data_dir, useProxy) -> NewsResponse:
@@ -417,6 +433,7 @@ async def news(
                 logger.exception("[NEWS] Erro inesperado: source=%s", source_key)
 
             if blocked:
+                await browser_manager.close_context(key)
                 blocked_until[key] = now() + settings.blocked_cooldown_seconds
                 start_background_refresh(key, scraper, limit, data_dir=source_key, useProxy=proxy)
 

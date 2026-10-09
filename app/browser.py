@@ -51,15 +51,13 @@ class BrowserManager:
                 self._locks[key] = asyncio.Lock()
             return self._locks[key]
 
+    
     async def start( self, data_dir: str, useProxy: bool = True) -> BrowserContext:
         key = self._context_key(useProxy, data_dir)
 
         if key in self._contexts:
             return key 
-        
-        # ctx = self._contexts.get(key)
-
-        
+            
         lock = await self._get_lock(key)
 
         async with lock:
@@ -73,11 +71,10 @@ class BrowserManager:
                 user_data_dir=f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
                 headless=self.headless,
                 slow_mo=150 if self.debug else 0,
-                proxy=self.proxy if useProxy and self.proxy else None,
+                # proxy=self.proxy if useProxy and self.proxy else None,
                 locale="pt-BR",
                 viewport={"width": 1280, "height": 900},
                 accept_downloads=False,
-                service_workers="block",
                 ignore_default_args=["--enable-automation"],
                 args=[
                     "--disable-blink-features=AutomationControlled",
@@ -109,7 +106,7 @@ class BrowserManager:
                     # "--memory-pressure-off",
                 ],
             )
-            kwargs["service_workers"] = "block" if not useProxy else "allow"
+            # kwargs["service_workers"] = "block" if not useProxy else "allow"
             if self.user_agent:
                 kwargs["user_agent"] = self.user_agent
             
@@ -119,6 +116,13 @@ class BrowserManager:
                     record_har_content="embed",
                 )
             context = await self._playwright.chromium.launch_persistent_context(**kwargs)
+            # depois de criar o contexto, ANTES de qualquer page.goto
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            """)
             if self.block_resources or self.block_google:
                 await context.route("**/*", self._handle_route)
             self._contexts[key] = context
@@ -252,6 +256,9 @@ class BrowserManager:
     def has_context(self, key: str) -> bool:
         ctx = self._contexts.get(key)
         return ctx is not None
+
+
+
     async def new_page(self, key):
         ctx = self._contexts.get(key)
         
@@ -260,6 +267,7 @@ class BrowserManager:
 
         page = None
         spare = self._spare_pages.get(key)
+        
         if spare is not None and not spare.is_closed():
             page = spare
         self._spare_pages[key] = None
@@ -287,3 +295,17 @@ class BrowserManager:
                 logger.warning(f"[Browser] Erro parando Playwright: {e}")
             finally:
                 self._playwright = None
+
+    async def close_context(self, key: str) -> None:
+        """Fecha um contexto específico, liberando conexões TCP com o proxy."""
+        ctx = self._contexts.pop(key, None)
+        self._spare_pages.pop(key, None)
+
+        if ctx is None:
+            return
+
+        try:
+            await ctx.close()
+            logger.info(f"[Browser] Contexto fechado: {key}")
+        except Exception as e:
+            logger.warning(f"[Browser] Erro fechando contexto {key}: {e}")

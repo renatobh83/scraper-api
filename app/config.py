@@ -19,7 +19,7 @@ class Settings:
     cache_ttl_seconds: int = int(os.getenv("CACHE_TTL_SECONDS", "120"))
     blocked_cooldown_seconds: int = int(os.getenv("BLOCKED_COOLDOWN_SECONDS", "60"))
     max_news_items: int = int(os.getenv("MAX_NEWS_ITEMS", "20"))
-    max_concurrent_scrapes: int = int(os.getenv("MAX_CONCURRENT_SCRAPES", "1"))
+    max_concurrent_scrapes: int = int(os.getenv("MAX_CONCURRENT_SCRAPES", "3"))
     news_cache_limit: int = 50
 
 

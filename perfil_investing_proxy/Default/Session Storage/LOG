@@ -1,3 +1,2 @@
-2026/10/09-06:52:59.558 20719 Reusing MANIFEST /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Session Storage/MANIFEST-000001
-2026/10/09-06:52:59.558 20719 Recovering log #3
-2026/10/09-06:52:59.559 20719 Reusing old log /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Session Storage/000003.log 
+2026/10/09-07:55:28.944 32053 Creating DB /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Session Storage since it was missing.
+2026/10/09-07:55:28.948 32053 Reusing MANIFEST /Users/renato/Desktop/Dev/scraper-api/perfil_investing_proxy/Default/Session Storage/MANIFEST-000001
