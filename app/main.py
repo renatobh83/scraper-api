@@ -189,22 +189,41 @@ def build_result(scraper, items) -> NewsResponse:
 async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
     """Sobe o browser e executa o scrape sob semaphore e timeout."""
     async with scrape_semaphore:
-        await browser_manager.start(*start_args, **start_kwargs)
-
-        if browser_manager.context is None:
-            raise ScraperError("Contexto Playwright não foi criado")
-
+        logger.info("[Scrape] Semaphore adquirido (ativos: %s)", 
+                settings.max_concurrent_scrapes - scrape_semaphore._value)
+        key = await browser_manager.start(**start_kwargs)
+        page = await browser_manager.new_page(key)
         try:
             return await asyncio.wait_for(
-                scraper.scrape(browser_manager, limit),
+                scraper.scrape(page, limit),
                 timeout=SCRAPE_TIMEOUT,
             )
+        
+        except (asyncio.TimeoutError, ScraperError) as exc:
+            # Tenta fechar a página (se ela existir)
+            if 'page' in locals() and not page.is_closed():
+                await page.close()
+            # Força o fechamento do contexto para limpar conexões pendentes
+            if key in browser_manager._contexts:
+                await browser_manager.close_context(key)
+            raise ScraperError(f"Scrape falhou: {exc}") from exc
         except asyncio.TimeoutError as exc:
             raise ScraperError(f"Scrape excedeu {SCRAPE_TIMEOUT}s") from exc
+        finally:
+            logger.info("[Scrape] Semaphore liberando (ativos restantes: %s)",
+                    settings.max_concurrent_scrapes - scrape_semaphore._value - 1)
+            try:
+                await asyncio.wait_for(page.close(), timeout=5)
+            except Exception as e:
+                logger.warning(f"[Scrape] page.close() falhou ou demorou: {e}")
 
 
-async def scrape_news(scraper, limit: int, **start_kwargs) -> NewsResponse:
-    items = await scrape_items(scraper, limit, **start_kwargs)
+async def scrape_news(scraper, limit: int, data_dir, useProxy) -> NewsResponse:
+    items = await scrape_items(
+        scraper, limit,
+        data_dir=data_dir,
+        useProxy=useProxy,
+    )
     return build_result(scraper, items)
 
 
@@ -213,7 +232,7 @@ async def scrape_news(scraper, limit: int, **start_kwargs) -> NewsResponse:
 # ============================================================
 
 
-async def background_refresh(key: CacheKey, scraper, limit: int) -> None:
+async def background_refresh(key: CacheKey, scraper, limit: int, data_dir: str, useProxy: bool) -> None:
     source_key = key[0]
     started_at = now()
 
@@ -233,7 +252,7 @@ async def background_refresh(key: CacheKey, scraper, limit: int) -> None:
 
             try:
                 # Mantém o comportamento original: sem useProxy=False aqui
-                result = await scrape_news(scraper, limit)
+                result = await scrape_news(scraper, limit, data_dir=data_dir, useProxy=useProxy)
             except Exception as exc:  # CancelledError não é capturado aqui
                 logger.warning(
                     "[NEWS] BACKGROUND falhou: source=%s tentativa=%s erro=%s",
@@ -284,14 +303,15 @@ async def background_refresh(key: CacheKey, scraper, limit: int) -> None:
         logger.info("[NEWS] BACKGROUND finalizado: source=%s", source_key)
 
 
-def start_background_refresh(key: CacheKey, scraper, limit: int) -> None:
+def start_background_refresh(key, scraper, limit, data_dir, useProxy) -> None:
     existing = background_tasks.get(key)
     if existing is not None and not existing.done():
         logger.info("[NEWS] BACKGROUND já está rodando: %s", key)
         return
 
     background_tasks[key] = asyncio.create_task(
-        background_refresh(key=key, scraper=scraper, limit=limit)
+        background_refresh(key=key, scraper=scraper, limit=limit,
+                           data_dir=data_dir, useProxy=useProxy)
     )
     logger.info("[NEWS] BACKGROUND agendado: %s", key)
 
@@ -365,7 +385,7 @@ async def news(
             )
         else:
             logger.info("[NEWS] CACHE STALE: source=%s limit=%s", source_key, limit)
-            start_background_refresh(key, scraper, limit)
+            start_background_refresh(key, scraper, limit, data_dir=source_key, useProxy=proxy)
 
         return stale_response(response, key, cached)
 
@@ -413,8 +433,9 @@ async def news(
                 logger.exception("[NEWS] Erro inesperado: source=%s", source_key)
 
             if blocked:
+                await browser_manager.close_context(key)
                 blocked_until[key] = now() + settings.blocked_cooldown_seconds
-                start_background_refresh(key, scraper, limit)
+                start_background_refresh(key, scraper, limit, data_dir=source_key, useProxy=proxy)
 
             cached, _ = get_cache(key)
             if cached is not None:
