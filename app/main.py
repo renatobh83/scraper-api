@@ -339,11 +339,12 @@ app.include_router(public_router)
 @app.get("/teste")
 async def teste(
     source: Annotated[str, Query(min_length=1, max_length=30)] = "teste",
+    ticker: str = Query("PETR4", min_length=1),
 ):
     scraper = get_scraper(source)
 
     try:
-        items = await scrape_items(scraper, 30, "./perfil_broadcast", useProxy=False)
+        items = await scraper.scrape(ticker)
     except ScraperError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

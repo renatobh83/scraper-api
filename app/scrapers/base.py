@@ -33,3 +33,13 @@ class MlScraper(ABC):
         limit: int,
     ) -> Sequence[NewsItem]:
         raise NotImplementedError
+
+class QuoteScraper(ABC):
+    source_name: str
+
+    @abstractmethod
+    async def scrape(
+        self,
+        ticker: str,
+    ) :
+        raise NotImplementedError
