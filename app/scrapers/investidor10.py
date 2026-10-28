@@ -248,7 +248,6 @@ class Investidor10Scraper(QuoteScraper):
 
     def _parse_list_html(self, html: str):
         resultados = []
-
         soup = BeautifulSoup(html, "html.parser")
 
         cards = soup.select("div.search-category-results > a.search-result-card")
@@ -256,7 +255,6 @@ class Investidor10Scraper(QuoteScraper):
         assetType = assetType.get_text(strip=True) if assetType else None
 
         for i, card in enumerate(cards, start=1):
-
             href_attr = card.get("href")
             if isinstance(href_attr, list):
                 href = href_attr[0] if href_attr else ""
@@ -303,4 +301,28 @@ class Investidor10Scraper(QuoteScraper):
                 "period": period,
             }
             resultados.append(dados)
+        # Segmento e outras informacoes
+        # 1. Procura a palavra "Setor" no HTML inteiro
+        if "Setor" in html:
+            print("✅ 'Setor' ESTÁ no HTML!")
+            index = html.find("Setor")
+            print("Contexto:", html[index - 200 : index + 300])
+        else:
+            print("❌ 'Setor' NÃO está no HTML.")
+        import re
+
+        # 2. Procura por URLs de API escondidas no texto (ex: /api/company ou /api/indicators)
+        urls = re.findall(r"https://investidor10\.com\.br/api/[a-zA-Z0-9_\-/]+", html)
+        print("\nURLs de API encontradas no HTML:")
+        for url in set(urls):
+            print(url)
+
+        # 3. Procura por JSON escondido (geralmente o site joga tudo num objeto gigante)
+        if "__NEXT_DATA__" in html:
+            print(
+                "\n✅ O site usa Next.js! Os dados estão no <script id='__NEXT_DATA__'>"
+            )
+        # html_formatado = soup.prettify()
+        # with open("debug_html.html", "w", encoding="utf-8") as arquivo:
+        #     arquivo.write(html_formatado)  # type: ignore
         return resultados

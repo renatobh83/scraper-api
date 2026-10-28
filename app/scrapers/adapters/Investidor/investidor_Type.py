@@ -269,9 +269,9 @@ def infer_asset_type(sub_type: Optional[str]) -> str:
 
 def build_asset(source: dict[str, Any]):
     """Converte um dict bruto (retorno da sua API/scraper) para o objeto 'asset' normalizado."""
-    print(source)
+
     papel = extract_ticker_and_sub_type(source)
-    print(papel)
+
     return {
         "symbol": source.get("ticker"),
         "name": source.get("nome"),
@@ -399,7 +399,7 @@ def extract_ticker_and_sub_type(
     Retorna (ticker, subType) — subType='fii' só quando veio pela chave 'FII'.
     """
     raw = source.get("assetType") or source.get("sub_type")
-    print(raw)
+
     if raw:
         return ASSET_TYPE_MAP.get(raw, raw)
 
