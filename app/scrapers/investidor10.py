@@ -1,18 +1,17 @@
 from urllib.parse import urljoin
 import requests
 from app.scrapers.adapters.Investidor.investidor_Type import (
+    _limpar_chave,
     build_response,
+    build_response_fundamentals,
     formatar_valor,
     remover_chaves_duplicadas,
 )
-from app.scrapers.base import QuoteScraper, ScraperError
+from app.scrapers.base import QuoteScraper
 from fastapi import HTTPException
 
 import httpx
 from bs4 import BeautifulSoup, Tag
-from typing import Any, cast
-import html as html_lib
-import json
 
 
 class Investidor10Scraper(QuoteScraper):
@@ -50,9 +49,7 @@ class Investidor10Scraper(QuoteScraper):
                 has_lista = soup.select_one("div.search-category-results")
 
                 if has_lista:
-
                     dados_lista = self._parse_list_html(r.text)
-
                     resultados_filtrados = [
                         item
                         for item in dados_lista
@@ -67,7 +64,7 @@ class Investidor10Scraper(QuoteScraper):
         except:
             raise
 
-    async def fundamentals(self, url: str, kind: str):
+    async def fundamentals(self, url: str, kind: str, ticker: str):
         if not url:
             raise HTTPException(
                 status_code=503,
@@ -85,18 +82,24 @@ class Investidor10Scraper(QuoteScraper):
             ) as client:
                 r = client.get(url)
                 r.raise_for_status()
-                cardHeader = self._parse_cardHeader_fundamentals(r.text)
-                print(cardHeader)
+                cardHeader = self._parse_cardHeader_fundamentals(r.text, ticker)
+
                 if kind == "stock":
                     fundamentals = self._parse_stock_html(r.text)
                 if kind == "fii":
                     fundamentals = self._parse_fii_html(r.text)
-                print(fundamentals)
+                dados = {
+                    **cardHeader,
+                    **fundamentals,
+                    "sub_type": kind,
+                    "ticker": ticker,
+                }
 
+                return build_response_fundamentals([dados])  # type: ignore
         except:
             raise
 
-    def _parse_cardHeader_fundamentals(self, html: str):
+    def _parse_cardHeader_fundamentals(self, html: str, ticker: str):
         dados = {}
 
         soup = BeautifulSoup(html, "html.parser")
@@ -113,6 +116,7 @@ class Investidor10Scraper(QuoteScraper):
             if isinstance(header, Tag) and isinstance(body, Tag):
                 # Pega o título (ex: "Cotação", "VARIAÇÃO (12M)")
                 chave = header.get_text(strip=True)
+                chave_limpa = _limpar_chave(chave, ticker)
                 # --- TRATAMENTO DO VALOR ---
                 # Precisamos ignorar os textos de tooltip e as tags SVG
                 valor = ""
@@ -125,7 +129,7 @@ class Investidor10Scraper(QuoteScraper):
                 # 3. Remove todos os SVGs (setinhas)
                 for svg in body.find_all("svg"):
                     svg.decompose()
-                if "Cotação" in chave:
+                if "Cotação" in chave_limpa:
                     # A cotação tem o valor dentro de uma span class="value"
                     val_el = body.find("span", class_="value")
 
@@ -135,8 +139,8 @@ class Investidor10Scraper(QuoteScraper):
                     # Pega o texto limpo (ex: "85,41%")
                     valor = body.get_text(strip=True)
 
-                if chave and valor:
-                    dados[chave] = valor
+                if chave_limpa and valor:
+                    dados[chave_limpa] = valor
         return dados
 
     def _parse_stock_html(self, html: str):

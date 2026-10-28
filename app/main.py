@@ -552,6 +552,7 @@ async def fundamentals(
     source: str = Query("investidor10", min_length=1, max_length=30),
     kind: str = Query(min_length=1),
     url: str = Query(min_length=1),
+    ticker: str = Query("PETR4", min_length=1),
 ):
     if not url:
         raise HTTPException(
@@ -561,7 +562,7 @@ async def fundamentals(
     scraper = get_scraper(source)
     fundamentals = require_method(scraper, "fundamentals")
     try:
-        return await fundamentals(url, kind)
+        return await fundamentals(url, kind, ticker)
     except ScraperError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
