@@ -227,6 +227,7 @@ def extract_ticker_and_sub_type(
     A origem manda a ação em 'Papel' (ex: 'PETR4') e o FII em 'FII' (ex: 'VGHF11').
     Retorna (ticker, subType) — subType='fii' só quando veio pela chave 'FII'.
     """
+
     fii = source.get("FII")
     if fii:
         return fii, "fii"

@@ -25,7 +25,7 @@ class FundamentusHeadlinesScraper(NewsScraper):
     historico = "https://www.fundamentus.com.br/amline/cot_hist.php?papel="
     proventos = "https://www.fundamentus.com.br/fii_proventos.php?papel="
 
-    async def searchFundamentusHttpx(self, ticker: str):
+    async def search(self, ticker: str):
         if not ticker:
             raise HTTPException(
                 status_code=503,
@@ -263,123 +263,6 @@ class FundamentusHeadlinesScraper(NewsScraper):
 
         await asyncio.gather(*(_buscar_um(tk) for tk in tickers))
         return resultados
-
-    async def search(
-        self,
-        context: BrowserContext,
-        ticker: str,
-    ):
-        if not ticker:
-            raise HTTPException(
-                status_code=503,
-                detail=("O Ticker deve ser informado."),
-            )
-
-        page = await self._openPage(context)
-        try:
-            url_detalhes = f"{self.baseUrl}{ticker}"
-
-            response_detalhes = await page.goto(
-                url_detalhes,
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            print("STATUS:", response_detalhes.status if response_detalhes else None)
-            status = response_detalhes.status if response_detalhes else None
-            if status is not None and status >= 400:
-                title = await page.title()
-                raise ScraperError(
-                    f"Fundamentus respondeu HTTP {status} mesmo com Playwright "
-                    f"(url={page.url}, title={title!r})."
-                )
-
-            await page.wait_for_timeout(1000)
-            html = await page.content()
-            # Verificar se existe a tabela de detalhes (ativo único)
-            has_detalhes = await page.query_selector('table[class="w728"]')
-
-            # Verificar se existe a tabela de lista (múltiplos ativos)
-            has_lista = await page.query_selector('table[id="test1"]')
-
-            has_any_table = await page.query_selector("table")
-            # Se tiver a tabela de detalhes (ativo único)
-            if has_detalhes:
-                print("Processando como ativo único...")
-                try:
-                    await page.wait_for_selector('table[class="w728"]', timeout=5000)
-                except PlaywrightError:
-                    pass
-                html = await page.content()
-                dados_detalhes = self._parse_html(html)
-                if self._is_fii(dados_detalhes):
-                    print(f"🔍 Buscando proventos para FII: {ticker}")
-                    proventos = await self._buscar_proventos(context, ticker)
-                    if proventos:
-                        dados_detalhes["proventos"] = proventos
-                    else:
-                        dados_detalhes["proventos"] = None
-                else:
-                    dados_detalhes["proventos"] = None
-
-                return build_response([dados_detalhes])
-            elif has_lista:
-                print("Processando como lista de ativos...")
-                try:
-                    await page.wait_for_selector('table[id="test1"]', timeout=5000)
-                except PlaywrightError:
-                    pass
-                html = await page.content()
-                # Aqui você precisa de um método diferente para parsear a lista
-                dados_lista = self._parse_list_html(html)  # <- await que faltava
-                resultados_filtrados = [
-                    item
-                    for item in dados_lista
-                    if (
-                        ticker.lower() in item.get("ticker", "").lower()
-                        or ticker.lower() in item.get("nome", "").lower()
-                        or ticker.lower() in item.get("razao_social", "").lower()
-                    )
-                ]
-                # Ordena: primeiro os que começam com o termo, depois os que contêm
-                resultados_filtrados.sort(
-                    key=lambda x: (
-                        (
-                            0
-                            if x.get("ticker", "").lower().startswith(ticker.lower())
-                            else 1
-                        ),
-                        x.get("ticker", "").lower(),
-                    )
-                )
-                tickers_encontrados = [item["ticker"] for item in resultados_filtrados]
-
-                detalhes_completos = await self._buscar_detalhes_da_lista(
-                    context, tickers_encontrados
-                )
-                # 🔥 PARA CADA FII NA LISTA, BUSCA PROVENTOS
-                for i, item in enumerate(detalhes_completos):
-                    print(i)
-                    if self._is_fii(item):
-                        print(f"🔍 Buscando proventos para FII: {item.get('ticker')}")
-                        proventos = await self._buscar_proventos(
-                            context, item.get("ticker")
-                        )
-                        if proventos:
-                            detalhes_completos[i]["proventos"] = proventos
-                        else:
-                            detalhes_completos[i]["proventos"] = None
-                    else:
-                        detalhes_completos[i]["proventos"] = None
-                return build_response(detalhes_completos)
-        except ScraperError:
-            raise
-        except PlaywrightError as exc:
-            raise ScraperError(
-                f"Falha no Playwright ao consultar Investing: {exc}"
-            ) from exc
-        finally:
-            await page.close()
-            pass
 
     async def scrape(
         self,
