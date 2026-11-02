@@ -43,3 +43,11 @@ class QuoteScraper(ABC):
         ticker: str,
     ) :
         raise NotImplementedError
+
+
+class TreasuryScraper(ABC):
+    source_name: str
+    
+    @abstractmethod
+    async def search(self):
+        raise NotImplementedError
