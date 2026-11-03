@@ -350,26 +350,29 @@ app.include_router(public_router)
 async def teste(
     source: Annotated[str, Query(min_length=1, max_length=30)] = "teste",
     ticker: str = Query("PETR4", min_length=1),
-    q: str | None = Query(default=None)
+    q: str | None = Query(default=None),
 ):
     scraper = get_scraper(source)
     search = require_method(scraper, "search")
 
     try:
         return await search(q)
-  
+
     except ScraperError as exc:
 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"items": "items"}
 
+
 # ============================================================
 # TRESOURY
 # ============================================================
 @app.get("/tesouro/indicators")
-async def indicators(symbols: str = Query(..., min_length=1),
-  source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",):
+async def indicators(
+    symbols: str = Query(..., min_length=1),
+    source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",
+):
     scraper = get_scraper(source)
     indicators = require_method(scraper, "indicators")
     lst = symbols.split(",")
@@ -377,18 +380,21 @@ async def indicators(symbols: str = Query(..., min_length=1),
         raise HTTPException(400, "Máximo de 50 símbolos por requisição")
     return await scraper.indicators(lst)
 
-@app.get("/tesouro/search")
-async def search( q: str | None = Query(default=None),
-  source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",):
-    search = require_method(scraper, "search")
-    scraper = get_scraper(source)
 
+@app.get("/tesouro/search")
+async def search(
+    q: str | None = Query(default=None),
+    source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",
+):
+    scraper = get_scraper(source)
+    search = require_method(scraper, "search")
     try:
         return await search(q)
-  
+
     except ScraperError as exc:
 
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
 
 # ============================================================
 # NEWS
