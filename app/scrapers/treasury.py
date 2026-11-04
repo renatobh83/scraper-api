@@ -4,15 +4,16 @@ import io
 import json
 import time
 import urllib.request
-from datetime import datetime, date,timezone
+from datetime import datetime, date, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
-
+import urllib.error
 from app.scrapers.base import TreasuryScraper as BaseTreasuryScraper
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
-CACHE_TTL = 6 * 3600  # 6h; o dataset atualiza ~1x por dia
+CHECK_INTERVAL = 3600
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; nexus-scraper/1.0)"}
+
 
 def parse_num(s: str | None) -> float | None:
     s = (s or "").strip()
@@ -37,6 +38,9 @@ class TreasuryScraper(BaseTreasuryScraper):
     _cache: dict | None = None
     _cache_ts: float = 0.0
     _lock = asyncio.Lock()
+    _csv_url: str | None = None
+    _etag: str | None = None
+    _last_modified: str | None = None
 
     def _get(self, url: str) -> bytes:
         req = urllib.request.Request(url, headers=HEADERS)
@@ -61,10 +65,14 @@ class TreasuryScraper(BaseTreasuryScraper):
     @lru_cache(maxsize=64)
     def to_indexer(self, bond_type: str) -> str:
         bt = bond_type.lower()
-        if "selic" in bt: return "selic"
-        if "prefixado" in bt: return "prefixado"
-        if "ipca" in bt: return "ipca"
-        if "igpm" in bt or "igp-m" in bt: return "igpm"
+        if "selic" in bt:
+            return "selic"
+        if "prefixado" in bt:
+            return "prefixado"
+        if "ipca" in bt:
+            return "ipca"
+        if "igpm" in bt or "igp-m" in bt:
+            return "igpm"
         return "desconhecido"
 
     def build_payload(self, csv_text: str, reference: date | None = None) -> dict:
@@ -78,7 +86,7 @@ class TreasuryScraper(BaseTreasuryScraper):
                 continue
 
             maturity = parse_date_br(row["Data Vencimento"])
-            if maturity < ref:                      # descarta vencidos antes de qualquer outro parse
+            if maturity < ref:  # descarta vencidos antes de qualquer outro parse
                 continue
 
             base_date = parse_date_br(row["Data Base"])
@@ -117,17 +125,44 @@ class TreasuryScraper(BaseTreasuryScraper):
         index = {v[1]["symbol"]: {**v[1], **v[2]} for v in by_symbol.values()}
         return {"status": "ok", "results": results, "index": index}
 
-    def _load_payload(self) -> dict:
-        return self.build_payload(self.fetch_csv_text(self.get_csv_url()))
+    def _fetch_if_changed(self) -> dict | None:
+        cls = type(self)
+        if not cls._csv_url:
+            cls._csv_url = self.get_csv_url()
+
+        headers = dict(HEADERS)
+        if cls._cache:
+            if cls._etag:
+                headers["If-None-Match"] = cls._etag
+            if cls._last_modified:
+                headers["If-Modified-Since"] = cls._last_modified
+
+        req = urllib.request.Request(cls._csv_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                cls._etag = r.headers.get("ETag")
+                cls._last_modified = r.headers.get("Last-Modified")
+                return self.build_payload(r.read().decode("utf-8-sig"))
+        except urllib.error.HTTPError as e:
+            if e.code == 304:  # não mudou
+                return None
+            raise
 
     async def _get_payload(self) -> dict:
         cls = type(self)
-        if cls._cache and time.monotonic() - cls._cache_ts < CACHE_TTL:
+        if cls._cache and time.monotonic() - cls._cache_ts < CHECK_INTERVAL:
             return cls._cache
-        async with cls._lock:                       # evita vários downloads simultâneos
-            if cls._cache and time.monotonic() - cls._cache_ts < CACHE_TTL:
+        async with cls._lock:
+            if cls._cache and time.monotonic() - cls._cache_ts < CHECK_INTERVAL:
                 return cls._cache
-            cls._cache = await asyncio.to_thread(self._load_payload)
+            try:
+                new = await asyncio.to_thread(self._fetch_if_changed)
+            except Exception:
+                if cls._cache:  # falhou a checagem: serve o cache antigo
+                    return cls._cache
+                raise
+            if new is not None:
+                cls._cache = new
             cls._cache_ts = time.monotonic()
             return cls._cache
 
@@ -143,7 +178,9 @@ class TreasuryScraper(BaseTreasuryScraper):
         # remove o campo interno antes de devolver
         return {
             "status": "ok",
-            "results": [{k: v for k, v in r.items() if k != "_haystack"} for r in results],
+            "results": [
+                {k: v for k, v in r.items() if k != "_haystack"} for r in results
+            ],
         }
 
     def to_coupon_type(self, bond_type: str) -> str:
@@ -168,9 +205,8 @@ class TreasuryScraper(BaseTreasuryScraper):
             "status": "ok",
             "provider": "tesouro-direto-oficial",
             "requestedAt": datetime.now(timezone.utc)
-                .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
             "results": results,
             "notFound": not_found,
-    }
-
-        
+        }
