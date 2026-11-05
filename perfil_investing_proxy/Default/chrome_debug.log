@@ -1,0 +1,3 @@
+[1105/075600.437:INFO:CONSOLE:1] "Uncaught Error: Minified React error #418; visit https://react.dev/errors/418?args[]=text&args[]= for the full message or use the non-minified dev environment for full errors and additional helpful warnings.", source: https://cdn.investing.com/x/_next/static/chunks/framework-d435c9ecb3f6057a.js (1)
+[1105/075601.071:INFO:CONSOLE:2] "setAnonymous", source:  (2)
+[1105/075601.146:INFO:CONSOLE:484] "Uncaught ReferenceError: OnetrustActiveGroups is not defined", source: https://cdn.cookielaw.org/opt-out/otCCPAiab.js (484)

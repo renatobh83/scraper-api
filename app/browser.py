@@ -60,7 +60,90 @@ class BrowserManager:
                 self._locks[key] = asyncio.Lock()
             return self._locks[key]
 
+    def _is_context_valid(self, ctx: BrowserContext) -> bool:
+        """Verifica se o BrowserContext e o Browser subjacente continuam ativos."""
+        if ctx is None:
+            return False
+        # No Playwright Python, o objeto browser do contexto pode ser verificado ou capturado por exceção
+        try:
+            return ctx.browser is None or ctx.browser.is_connected()
+        except Exception:
+            return False
+
     async def start(self, data_dir: str, useProxy: bool = True) -> str:
+        key = self._context_key(useProxy, data_dir)
+
+        # 1. Checagem rápida antes de adquirir o lock
+        if key in self._contexts:
+            ctx = self._contexts[key]
+            if self._is_context_valid(ctx):
+                return key
+            else:
+                logger.warning(
+                    f"[Browser] Contexto {key} inválido/fechado detectado. Limpando..."
+                )
+                await self.close_context(key)
+
+        lock = await self._get_lock(key)
+
+        async with lock:
+            # 2. Double-check locking
+            if key in self._contexts:
+                ctx = self._contexts[key]
+                if self._is_context_valid(ctx):
+                    return key
+                else:
+                    await self.close_context(key)
+
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+
+            kwargs = dict(
+                user_data_dir=f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
+                headless=self.headless,
+                slow_mo=150 if self.debug else 0,
+                proxy=self.proxy if useProxy and self.proxy else None,
+                locale="pt-BR",
+                viewport={"width": 1280, "height": 900},
+                accept_downloads=False,
+                ignore_default_args=["--enable-automation"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--max-sockets-per-group=4",
+                    "--renderer-process-limit=1",
+                ],
+            )
+
+            if self.user_agent:
+                kwargs["user_agent"] = self.user_agent
+
+            if self.record_har:
+                kwargs.update(
+                    record_har_path=f"debug_{key.replace(':', '_')}.har",
+                    record_har_content="embed",
+                )
+
+            context = await self._playwright.chromium.launch_persistent_context(
+                **kwargs
+            )
+
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en'] });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            """)
+
+            if self.block_resources or self.block_google:
+                await context.route("**/*", self._handle_route)
+
+            self._contexts[key] = context
+            self._spare_pages[key] = context.pages[0] if context.pages else None
+
+            return key
         """Inicia um novo BrowserContext persistent se ainda não existir.
 
         Retorna a chave do contexto gerado.
@@ -68,24 +151,29 @@ class BrowserManager:
         key = self._context_key(useProxy, data_dir)
 
         if key in self._contexts:
-            return key
+            ctx = self._contexts[key]
+            if ctx.is_connected():  # type: ignore
+                return key
+        else:
+            # Se foi fechado externamente, limpa para recriar
+            await self.close_context(key)
 
         lock = await self._get_lock(key)
 
         async with lock:
             # Double-check locking pattern para evitar múltiplas instanciações
             if key in self._contexts:
-                return key
+                ctx = self._contexts[key]
+                if ctx.is_connected():  # type: ignore
+                    return key
+                else:
+                    await self.close_context(key)
 
             if self._playwright is None:
                 self._playwright = await async_playwright().start()
 
             kwargs = dict(
-                user_data_dir=(
-                    None
-                    if useProxy and self.proxy
-                    else f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}"
-                ),
+                user_data_dir=f"perfil_{data_dir}_{'proxy' if useProxy else 'noproxy'}",
                 headless=self.headless,
                 slow_mo=150 if self.debug else 0,
                 proxy=self.proxy if useProxy and self.proxy else None,
@@ -156,7 +244,6 @@ class BrowserManager:
         await route.continue_()
 
     async def new_page(self, key: str):
-        """Cria ou reutiliza uma aba do navegador no contexto informado."""
         ctx = self._contexts.get(key)
         if ctx is None:
             raise RuntimeError(f"Contexto '{key}' não iniciado")
@@ -164,13 +251,19 @@ class BrowserManager:
         page = None
         spare = self._spare_pages.get(key)
 
-        # Reutiliza a página padrão criada no lançamento se estiver aberta
         if spare is not None and not spare.is_closed():
             page = spare
         self._spare_pages[key] = None
 
         if page is None:
-            page = await ctx.new_page()
+            try:
+                page = await ctx.new_page()
+            except Exception as exc:
+                # Se o contexto foi fechado antes do new_page, remove a referência corrompida
+                await self.close_context(key)
+                raise RuntimeError(
+                    f"Falha ao abrir página no contexto '{key}': {exc}"
+                ) from exc
 
         page.set_default_timeout(settings.selector_timeout_ms)
         page.set_default_navigation_timeout(settings.navigation_timeout_ms)

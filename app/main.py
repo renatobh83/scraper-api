@@ -183,7 +183,15 @@ async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
             settings.max_concurrent_scrapes - browser_semaphore._value,
         )
         key = await browser_manager.start(**start_kwargs)
-        page = await browser_manager.new_page(key)
+        try:
+            page = await browser_manager.new_page(key)
+        except Exception as exc:
+            logger.warning(
+                f"[Scrape] Contexto {key} inválido ao abrir página. Reiniciando contexto..."
+            )
+            await browser_manager.close_context(key)
+            key = await browser_manager.start(**start_kwargs)
+            page = await browser_manager.new_page(key)
         try:
             return await asyncio.wait_for(
                 scraper.scrape(page, limit),
