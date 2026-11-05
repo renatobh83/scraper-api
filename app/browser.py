@@ -98,6 +98,8 @@ class BrowserManager:
                     "--disable-dev-shm-usage",
                     "--no-first-run",
                     "--no-default-browser-check",
+                    "--max-sockets-per-group=4",
+                    "--renderer-process-limit=1",
                 ],
             )
 
