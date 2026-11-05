@@ -1,67 +1,45 @@
-from datetime import datetime, timezone
+import asyncio
 import json
 import logging
 import os
-import re
-from urllib.parse import urljoin
-import httpx
-from bs4 import BeautifulSoup
-from playwright.async_api import BrowserContext, Error as PlaywrightError
-from playwright_stealth import Stealth
-from app.browser import BrowserManager
-from app.config import settings
-from app.utils.human_behavior import human_scroll, jitter
-from app.utils.models import NewsItem
-from app.scrapers.base import NewsScraper, ScraperError
-
 import random
-import asyncio
+import re
+from datetime import datetime, timezone
+from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup
+from playwright.async_api import Error as PlaywrightError
+
+from app.scrapers.base import NewsScraper, ScraperError
+from app.utils.models import NewsItem
 
 logger = logging.getLogger("uvicorn.error")
 
-SELECTOR_WAIT_TIMEOUT_MS = 30000
-
 
 class InvestingHeadlinesScraper(NewsScraper):
+    """Scraper para o portal Investing Brasil usando Playwright com bypassing de Cloudflare Turnstile.
+
+    Responsabilidade:
+    - Acessar a página de notícias da Investing.
+    - Resolver o desafio do Cloudflare Turnstile simulando cliques do usuário.
+    - Parsear o HTML extraindo títulos, URLs, datas e tickers de ações/commodities.
+    - Garantir o fechamento da página no bloco finally.
+    """
+
     source_name = "investing"
     page_url = "https://br.investing.com/news/headlines"
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    ]
 
-    def get_random_ua(self):
-        import random
-
-        return random.choice(self.user_agents)
-
-    async def scrape(
-        self,
-        page,
-        limit: int,
-    ) -> list[NewsItem]:
-        # page = await context.new_page()
-        logger.info("[Investing] Abrindo pagina")
-        # stealth = Stealth()
-        # await stealth.apply_stealth_async(page)
-
+    async def scrape(self, page, limit: int) -> list[NewsItem]:
+        """Executa a raspagem de notícias dentro de uma página pré-existente."""
+        logger.info("[Investing] Abrindo página")
         try:
-            logger.info("[Investing] vai chamar page.goto")
-         
             await page.goto(self.page_url, wait_until="domcontentloaded")
+
+            # Resolve validação do Cloudflare caso apareça
             if not await self.resolver_cloudflare(page):
                 await self._save_debug_artifacts(page, "turnstile_falhou")
-                raise ScraperError("Turnstile não resolvido (o desafio reapareceu após o clique).")
+                raise ScraperError("Turnstile não resolvido (desafio persistente).")
 
-
-            # logger.info("[Investing] STATUS: %s", response.status if response else None)
-            # status = response.status if response else None
-           
-
-            # O seletor final pode ser ajustado após inspecionar a estrutura real
-            # que a Investing entrega para o seu IP/região.
             try:
                 await page.wait_for_selector(
                     'div[data-test="breaking-news"] '
@@ -70,49 +48,45 @@ class InvestingHeadlinesScraper(NewsScraper):
                     'a[data-test="article-title"], '
                     'article a[href*="/news/"]',
                     state="attached",
+                    timeout=15000,
                 )
             except PlaywrightError:
-                # Alguns layouts podem renderizar cards sem o atributo esperado.
-                # O HTML ainda será analisado pelos seletores de fallback.
-                pass
-
-            if os.getenv("DEBUG_PAUSE", "0") == "1":
-                await page.pause()
+                logger.warning(
+                    "[Investing] Timeout aguardando seletor principal; tentando parsear com seletores de fallback"
+                )
 
             html = await page.content()
             items = self._parse_html(html, limit)
+
             if not items:
-                raise ScraperError(
-                    "Nenhuma notícia encontrada no HTML renderizado da Investing. "
-                    "Verifique os logs do container para o diagnóstico."
-                )
+                raise ScraperError("Nenhuma notícia encontrada no HTML da Investing.")
 
             return items
-        except ScraperError:
-            raise
+
         except PlaywrightError as exc:
             raise ScraperError(
                 f"Falha no Playwright ao consultar Investing: {exc}"
             ) from exc
-
         finally:
-            logger.info("[Investing] Fechando pagina")
-            await page.close()
+            logger.info("[Investing] Fechando página de raspagem")
+            if not page.is_closed():
+                await page.close()
 
     async def _desafio_ativo(self, page) -> bool:
+        """Verifica se a página atual ainda é o desafio do Cloudflare."""
         try:
             title = await page.title()
         except PlaywrightError:
-            return True  # navegando, ainda no desafio
+            return True
         return "Um momento" in title or "Just a moment" in title
 
     async def resolver_cloudflare(self, page, tentativas: int = 3) -> bool:
+        """Tenta detectar e interagir com o desafio Cloudflare Turnstile."""
         for n in range(1, tentativas + 1):
             if not await self._desafio_ativo(page):
                 return True
 
             logger.info("[Investing] Turnstile tentativa %s/%s", n, tentativas)
-            # deixa o widget carregar e "assentar" antes de clicar
             await page.wait_for_timeout(random.randint(2500, 4000))
 
             if not await self.clicar_turnstile(page, timeout=15):
@@ -126,13 +100,12 @@ class InvestingHeadlinesScraper(NewsScraper):
                 )
                 return True
             except PlaywrightError:
-                logger.warning("[Investing] Desafio reapareceu, tentando de novo")
+                logger.warning("[Investing] Desafio reapareceu, tentando novamente")
 
-        return not await self._desafio_ativo(page)       
-        
-    
-    async def clicar_turnstile(self, page, timeout=30):
-        """Procura o iframe do Turnstile e clica no checkbox. Retorna True se clicou."""
+        return not await self._desafio_ativo(page)
+
+    async def clicar_turnstile(self, page, timeout=30) -> bool:
+        """Localiza o iframe do Turnstile e efetua o movimento humano até o checkbox."""
         for _ in range(timeout * 2):
             for frame in page.frames:
                 if "challenges.cloudflare.com" in frame.url:
@@ -143,7 +116,6 @@ class InvestingHeadlinesScraper(NewsScraper):
                         box = None
 
                     if box and box["width"] > 0:
-                        # o checkbox fica ~30px da borda esquerda, centralizado na vertical
                         x = box["x"] + 30 + random.uniform(-3, 3)
                         y = box["y"] + box["height"] / 2 + random.uniform(-3, 3)
 
@@ -156,7 +128,7 @@ class InvestingHeadlinesScraper(NewsScraper):
         return False
 
     async def _save_debug_artifacts(self, page, reason: str) -> None:
-        """Salva evidências locais sem registrar credenciais nos logs."""
+        """Salva screenshots e HTML para auxílio em diagnóstico em caso de erros."""
         if os.getenv("SAVE_DEBUG_ARTIFACTS", "1") != "1":
             return
 
@@ -168,42 +140,33 @@ class InvestingHeadlinesScraper(NewsScraper):
         try:
             await page.screenshot(path=f"{prefix}.png", full_page=True)
             html = await page.content()
-            with open(f"{prefix}.html", "w", encoding="utf-8") as file:
-                file.write(html)
+            with open(f"{prefix}.html", "w", encoding="utf-8") as f:
+                f.write(html)
 
-            metadata = {
-                "url": page.url,
-                "title": await page.title(),
-                "reason": reason,
-            }
-            with open(f"{prefix}.json", "w", encoding="utf-8") as file:
-                json.dump(metadata, file, ensure_ascii=False, indent=2)
+            metadata = {"url": page.url, "title": await page.title(), "reason": reason}
+            with open(f"{prefix}.json", "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
 
             logger.warning("Artefatos de diagnóstico salvos em %s.*", prefix)
         except Exception as exc:
-            logger.warning("Não foi possível salvar artefatos de diagnóstico: %s", exc)
+            logger.warning("Erro salvando artefatos de diagnóstico: %s", exc)
 
     def _parse_html(self, html: str, limit: int) -> list[NewsItem]:
+        """Extrai a estrutura de artigos a partir do texto HTML retornado."""
         soup = BeautifulSoup(html, "html.parser")
         items: list[NewsItem] = []
         seen_urls: set[str] = set()
 
-        # Estrutura observada no DOM compartilhado pelo usuário:
         breaking_news = soup.select_one('div[data-test="breaking-news"]')
-        if breaking_news:
-            cards = breaking_news.select('div[data-test="breaking-news-article"]')
-        else:
-            # Fallback para versões/layouts diferentes da página.
-            cards = soup.select(
-                'article, [data-test="article-list-item"], '
-                '[data-test="article-item"], .articleItem'
-            )
+        cards = (
+            breaking_news.select('div[data-test="breaking-news-article"]')
+            if breaking_news
+            else soup.select('article, [data-test="article-list-item"], .articleItem')
+        )
 
         for card in cards:
-            # No layout atual, o título está no primeiro link de notícia
-            # dentro de cada breaking-news-article.
             anchor = card.select_one(
-                'a[href*="/news/"], a[data-test="article-title"], ' "h2 a, h3 a"
+                'a[href*="/news/"], a[data-test="article-title"], h2 a, h3 a'
             )
             if not anchor:
                 continue
@@ -236,54 +199,31 @@ class InvestingHeadlinesScraper(NewsScraper):
 
     @staticmethod
     def _extract_symbols(card) -> list[str]:
-        """Extrai símbolos dos ativos relacionados à notícia.
-
-        Estrutura observada no DOM:
-        .news-headlines-list-item.related-pairs
-          a[href*="/equities/"], a[href*="/commodities/"]
-            span[title="Nome da empresa"].text -> símbolo
-
-        O seletor de URL inclui outros tipos de ativos porque a Investing
-        pode relacionar ações, commodities, índices, moedas e ETFs.
-        """
+        """Identifica códigos de ativos (ex: PETR4, VALE3) citados na notícia."""
         symbols: list[str] = []
         seen_symbols: set[str] = set()
         asset_href_selector = (
-            'a[href*="/equities/"], '
-            'a[href*="/commodities/"], '
-            'a[href*="/currencies/"], '
-            'a[href*="/indices/"], '
-            'a[href*="/etfs/"], '
-            'a[href*="/funds/"]'
+            'a[href*="/equities/"], a[href*="/commodities/"], '
+            'a[href*="/currencies/"], a[href*="/indices/"], a[href*="/etfs/"]'
         )
 
         related_links = card.select(
             "div.news-headlines-list-item.related-pairs " + asset_href_selector
         )
         if not related_links:
-            # Fallback caso as classes utilitárias mudem, mas o bloco
-            # related-pairs continue identificado no HTML.
-            related_links = card.select(
-                '[class*="related-pairs"] ' + asset_href_selector
-            )
-        if not related_links:
             related_links = card.select(asset_href_selector)
 
         for link in related_links:
             symbol = InvestingHeadlinesScraper._symbol_from_link(link)
-            if not symbol or symbol in seen_symbols:
-                continue
-
-            symbols.append(symbol)
-            seen_symbols.add(symbol)
+            if symbol and symbol not in seen_symbols:
+                symbols.append(symbol)
+                seen_symbols.add(symbol)
 
         return symbols
 
     @staticmethod
     def _symbol_from_link(link) -> str | None:
-        """Obtém o símbolo sem confundir o nome da empresa com o ativo."""
-        # No layout mostrado, o símbolo é o texto do span que possui title
-        # com o nome completo da empresa.
+        """Filtra o texto do elemento procurando padrões válidos de tickers de mercado."""
         candidates = link.select("span[title], span")
         candidates.append(link)
 
@@ -292,12 +232,7 @@ class InvestingHeadlinesScraper(NewsScraper):
             if re.fullmatch(r"[A-Z]{1,8}(?:[.\-][A-Z0-9]{1,4})?\d{0,2}", text):
                 return text
 
-            # Se houver texto complementar no link, procure um token com
-            # aparência de símbolo, como LMT, LCO, PETRA4 ou AAPL.
-            tokens = re.findall(
-                r"\b[A-Z]{1,8}(?:[.\-][A-Z0-9]{1,4})?\d{0,2}\b",
-                text,
-            )
+            tokens = re.findall(r"\b[A-Z]{1,8}(?:[.\-][A-Z0-9]{1,4})?\d{0,2}\b", text)
             if tokens:
                 return tokens[-1]
 
@@ -305,6 +240,7 @@ class InvestingHeadlinesScraper(NewsScraper):
 
     @staticmethod
     def _parse_datetime(card) -> datetime | None:
+        """Converte a data de publicação extraída da tag time para objeto datetime UTC."""
         element = card.select_one("time[datetime], [data-test='article-publish-date']")
         if not element:
             return None
@@ -321,11 +257,11 @@ class InvestingHeadlinesScraper(NewsScraper):
 
     @staticmethod
     def _extract_summary(card) -> str | None:
+        """Extrai o resumo da notícia se disponível no card."""
         element = card.select_one(
             '[data-test="article-description"], p, .articleItem__summary'
         )
         if not element:
             return None
-
         summary = " ".join(element.get_text(" ", strip=True).split())
         return summary or None

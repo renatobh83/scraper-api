@@ -12,55 +12,48 @@ from app.config import settings
 from app.scrapers import SCRAPERS
 from app.scrapers.base import ScraperError
 from app.utils.models import HealthResponse, NewsResponse
-from app.utils.security import verify_api_key
 
 logger = logging.getLogger("uvicorn.error")
 
 CacheKey = tuple[str, int]
 
 # ============================================================
-# RECURSOS GLOBAIS
+# CONTROLE DE CONCORRÊNCIA E RECURSOS GLOBAIS
 # ============================================================
 
-scrape_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
+# 1. Semáforo estrito para o uso do Playwright/Navegador (Evita 'Exceeded concurrency limit')
+browser_semaphore = asyncio.Semaphore(settings.max_concurrent_scrapes)
+
+# 2. Semáforo amplo para chamadas HTTP puras (Fundamentus, Tesouro)
+http_semaphore = asyncio.Semaphore(20)
+
 browser_manager = BrowserManager()
-
 cache: dict[CacheKey, tuple[float, NewsResponse]] = {}
-
-# Quando uma fonte pode voltar a ser consultada
 blocked_until: dict[CacheKey, float] = {}
-
-# Um refresh em background por chave
 background_tasks: dict[CacheKey, asyncio.Task] = {}
-
-# Um scrape em andamento por chave (evita N requests iguais raspando juntas)
 key_locks: dict[CacheKey, asyncio.Lock] = {}
-
-# ============================================================
-# CONFIGURAÇÃO
-# ============================================================
 
 BACKGROUND_FIRST_RETRY = 0.5
 BACKGROUND_BACKOFF = [5]
 BACKGROUND_MAX_TIME = 60
-
-# Tempo máximo de um scrape (segura o semaphore, então precisa ter limite)
 SCRAPE_TIMEOUT = 45
 
 
 # ============================================================
-# LIFESPAN
+# LIFESPAN DA APLICAÇÃO
 # ============================================================
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Gerencia a inicialização e o encerramento gracioso dos recursos."""
     logger.info("[APP] Iniciando aplicação")
     try:
         yield
     finally:
         logger.info("[APP] Encerrando aplicação")
 
+        # Cancela tasks de background pendentes
         tasks = list(background_tasks.values())
         for task in tasks:
             if not task.done():
@@ -70,22 +63,22 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(*tasks, return_exceptions=True)
 
         background_tasks.clear()
-        await browser_manager.close()
 
-        logger.info("[APP] Aplicação encerrada")
+        # Encerra o gerenciador de navegadores
+        await browser_manager.close()
+        logger.info("[APP] Aplicação encerrada com sucesso")
 
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="API para coleta de notícias com Playwright e cache com retry em background.",
+    description="API otimizada de scraping financeiro com suporte a Playwright, HTTP assíncrono e cache inteligente.",
     lifespan=lifespan,
-    # dependencies=[Depends(verify_api_key)],
 )
 
 
 # ============================================================
-# HELPERS
+# FUNÇÕES AUXILIARES / CACHE
 # ============================================================
 
 
@@ -94,6 +87,7 @@ def now() -> float:
 
 
 def get_scraper(source: str):
+    """Obtém a classe do scraper registrada pelo seu nome."""
     scraper = SCRAPERS.get(source.lower())
     if scraper is None:
         raise HTTPException(
@@ -107,6 +101,7 @@ def get_scraper(source: str):
 
 
 def require_method(scraper, name: str):
+    """Valida se o scraper possui o método solicitado."""
     method = getattr(scraper, name, None)
     if method is None:
         raise HTTPException(
@@ -128,9 +123,7 @@ def get_cache(key: CacheKey) -> tuple[NewsResponse | None, bool]:
 
 def cache_age_seconds(key: CacheKey) -> int:
     cached = cache.get(key)
-    if cached is None:
-        return 0
-    return int(now() - cached[0])
+    return int(now() - cached[0]) if cached else 0
 
 
 def cooldown_remaining(key: CacheKey) -> int:
@@ -169,12 +162,8 @@ def store_result(key: CacheKey, result: NewsResponse) -> None:
 
 
 def build_result(scraper, items) -> NewsResponse:
-    if items is None:
-        raise ScraperError("Scraper não retornou resultado")
-
-    items = list(items)
     if not items:
-        raise ScraperError("Scraper retornou lista vazia")
+        raise ScraperError("Scraper retornou lista vazia ou nula")
 
     return NewsResponse(
         source=scraper.source_name,
@@ -182,16 +171,16 @@ def build_result(scraper, items) -> NewsResponse:
         count=len(items),
         stale=False,
         age_seconds=0,
-        items=items,
+        items=list(items),
     )
 
 
 async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
-    """Sobe o browser e executa o scrape sob semaphore e timeout."""
-    async with scrape_semaphore:
+    """Executa a raspagem de navegador sob proteção de semáforo e timeout."""
+    async with browser_semaphore:
         logger.info(
-            "[Scrape] Semaphore adquirido (ativos: %s)",
-            settings.max_concurrent_scrapes - scrape_semaphore._value,
+            "[Scrape] Browser Semaphore adquirido (ativos: %s)",
+            settings.max_concurrent_scrapes - browser_semaphore._value,
         )
         key = await browser_manager.start(**start_kwargs)
         page = await browser_manager.new_page(key)
@@ -200,26 +189,17 @@ async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
                 scraper.scrape(page, limit),
                 timeout=SCRAPE_TIMEOUT,
             )
-
-        except (asyncio.TimeoutError, ScraperError) as exc:
-            # Tenta fechar a página (se ela existir)
+        except asyncio.TimeoutError as exc:
             if "page" in locals() and not page.is_closed():
                 await page.close()
-            # Força o fechamento do contexto para limpar conexões pendentes
-            if key in browser_manager._contexts:
-                await browser_manager.close_context(key)
-            raise ScraperError(f"Scrape falhou: {exc}") from exc
-        except asyncio.TimeoutError as exc:
-            raise ScraperError(f"Scrape excedeu {SCRAPE_TIMEOUT}s") from exc
-        finally:
-            logger.info(
-                "[Scrape] Semaphore liberando (ativos restantes: %s)",
-                settings.max_concurrent_scrapes - scrape_semaphore._value - 1,
-            )
-            try:
-                await asyncio.wait_for(page.close(), timeout=5)
-            except Exception as e:
-                logger.warning(f"[Scrape] page.close() falhou ou demorou: {e}")
+            await browser_manager.close_context(key)
+            raise ScraperError(
+                f"Scrape excedeu tempo limite de {SCRAPE_TIMEOUT}s"
+            ) from exc
+        except ScraperError as exc:
+            if "page" in locals() and not page.is_closed():
+                await page.close()
+            raise exc
 
 
 async def scrape_news(scraper, limit: int, data_dir, useProxy) -> NewsResponse:
@@ -233,7 +213,7 @@ async def scrape_news(scraper, limit: int, data_dir, useProxy) -> NewsResponse:
 
 
 # ============================================================
-# BACKGROUND REFRESH
+# BACKGROUND REFRESH DE CACHE
 # ============================================================
 
 
@@ -242,80 +222,41 @@ async def background_refresh(
 ) -> None:
     source_key = key[0]
     started_at = now()
-
     logger.info("[NEWS] BACKGROUND iniciado: source=%s limit=%s", source_key, limit)
 
     try:
         await asyncio.sleep(BACKGROUND_FIRST_RETRY)
-
         for attempt, delay in enumerate(BACKGROUND_BACKOFF, start=1):
             if now() - started_at >= BACKGROUND_MAX_TIME:
-                logger.warning(
-                    "[NEWS] BACKGROUND atingiu limite de tempo: source=%s", source_key
-                )
                 break
 
-            logger.info("[NEWS] BACKGROUND tentativa=%s source=%s", attempt, source_key)
-
             try:
-                # Mantém o comportamento original: sem useProxy=False aqui
                 result = await scrape_news(
                     scraper, limit, data_dir=data_dir, useProxy=useProxy
                 )
-            except Exception as exc:  # CancelledError não é capturado aqui
-                logger.warning(
-                    "[NEWS] BACKGROUND falhou: source=%s tentativa=%s erro=%s",
+                store_result(key, result)
+                logger.info(
+                    "[NEWS] BACKGROUND SUCESSO: source=%s items=%s",
                     source_key,
-                    attempt,
-                    exc,
+                    result.count,
                 )
-
+                return
+            except Exception as exc:
                 if is_block_error(exc):
                     blocked_until[key] = now() + settings.blocked_cooldown_seconds
-                    logger.warning(
-                        "[NEWS] Bloqueio detectado. Cooldown=%ss source=%s",
-                        settings.blocked_cooldown_seconds,
-                        source_key,
-                    )
                     break
-
-                # Não dorme depois da última tentativa
-                if attempt == len(BACKGROUND_BACKOFF):
-                    break
-
-                logger.info("[NEWS] BACKGROUND aguardando %ss", delay)
-                await asyncio.sleep(delay)
-                continue
-
-            store_result(key, result)
-            logger.info(
-                "[NEWS] BACKGROUND SUCESSO: source=%s items=%s tentativa=%s",
-                source_key,
-                result.count,
-                attempt,
-            )
-            return
-
-        logger.error("[NEWS] BACKGROUND terminou sem sucesso: source=%s", source_key)
-
+                if attempt < len(BACKGROUND_BACKOFF):
+                    await asyncio.sleep(delay)
     except asyncio.CancelledError:
-        logger.info("[NEWS] BACKGROUND cancelado: source=%s", source_key)
         raise
-
-    except Exception:
-        logger.exception("[NEWS] Erro inesperado no BACKGROUND: source=%s", source_key)
-
     finally:
-        # Só remove se a entrada ainda for esta task
         if background_tasks.get(key) is asyncio.current_task():
             background_tasks.pop(key, None)
-        logger.info("[NEWS] BACKGROUND finalizado: source=%s", source_key)
 
 
 def start_background_refresh(key, scraper, limit, data_dir, useProxy) -> None:
     existing = background_tasks.get(key)
     if existing is not None and not existing.done():
-        logger.info("[NEWS] BACKGROUND já está rodando: %s", key)
         return
 
     background_tasks[key] = asyncio.create_task(
@@ -323,11 +264,10 @@ def start_background_refresh(key, scraper, limit, data_dir, useProxy) -> None:
             key=key, scraper=scraper, limit=limit, data_dir=data_dir, useProxy=useProxy
         )
     )
-    logger.info("[NEWS] BACKGROUND agendado: %s", key)
 
 
 # ============================================================
-# HEALTH
+# ROTAS / ENDPOINTS DA API
 # ============================================================
 
 public_router = APIRouter()
@@ -341,44 +281,20 @@ async def health() -> HealthResponse:
 app.include_router(public_router)
 
 
-# ============================================================
-# TESTE
-# ============================================================
-
-
-@app.get("/teste")
-async def teste(
-    source: Annotated[str, Query(min_length=1, max_length=30)] = "teste",
-    ticker: str = Query("PETR4", min_length=1),
-    q: str | None = Query(default=None),
-):
-    scraper = get_scraper(source)
-    search = require_method(scraper, "search")
-
-    try:
-        return await search(q)
-
-    except ScraperError as exc:
-
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    return {"items": "items"}
-
-
-# ============================================================
-# TRESOURY
-# ============================================================
 @app.get("/tesouro/indicators")
 async def indicators(
     symbols: str = Query(..., min_length=1),
     source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",
 ):
     scraper = get_scraper(source)
-    indicators = require_method(scraper, "indicators")
+    indicators_func = require_method(scraper, "indicators")
     lst = symbols.split(",")
     if len(lst) > 50:
         raise HTTPException(400, "Máximo de 50 símbolos por requisição")
-    return await scraper.indicators(lst)
+
+    # Protegido por semáforo HTTP
+    async with http_semaphore:
+        return await indicators_func(lst)
 
 
 @app.get("/tesouro/search")
@@ -387,18 +303,12 @@ async def search(
     source: Annotated[str, Query(min_length=1, max_length=30)] = "tesouro",
 ):
     scraper = get_scraper(source)
-    search = require_method(scraper, "search")
+    search_func = require_method(scraper, "search")
     try:
-        return await search(q)
-
+        async with http_semaphore:
+            return await search_func(q)
     except ScraperError as exc:
-
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-# ============================================================
-# NEWS
-# ============================================================
 
 
 @app.get("/news", response_model=NewsResponse)
@@ -414,72 +324,39 @@ async def news(
 
     # 1. CACHE FRESCO
     cached, is_fresh = get_cache(key)
-
     if cached is not None and is_fresh:
-        logger.info("[NEWS] CACHE HIT: source=%s limit=%s", source_key, limit)
         return hit_response(response, key, cached)
 
-    # 2. CACHE STALE: devolve na hora e atualiza em background
+    # 2. CACHE STALE
     if cached is not None:
-        remaining = cooldown_remaining(key)
-
-        if remaining:
-            logger.info(
-                "[NEWS] Cache stale, fonte em cooldown: source=%s restante=%ss",
-                source_key,
-                remaining,
-            )
-        else:
-            logger.info("[NEWS] CACHE STALE: source=%s limit=%s", source_key, limit)
+        if not cooldown_remaining(key):
             start_background_refresh(
                 key, scraper, limit, data_dir=source_key, useProxy=proxy
             )
-
         return stale_response(response, key, cached)
 
-    # 3. SEM CACHE + COOLDOWN
+    # 3. VERIFICA COOLDOWN
     remaining = cooldown_remaining(key)
-
     if remaining:
-        logger.warning(
-            "[NEWS] Fonte em cooldown: source=%s restante=%ss", source_key, remaining
-        )
         raise HTTPException(
             status_code=503,
             detail="A fonte está temporariamente indisponível. Tente novamente em instantes.",
             headers={"Retry-After": str(min(remaining, 60))},
         )
 
-    # 4. CACHE MISS: um scrape por chave
-    logger.info("[NEWS] CACHE MISS: source=%s limit=%s", source_key, limit)
-
+    # 4. CACHE MISS
     lock = key_locks.setdefault(key, asyncio.Lock())
-
     async with lock:
-        # Outra request pode ter preenchido o cache enquanto esperávamos
         cached, is_fresh = get_cache(key)
         if cached is not None and is_fresh:
-            logger.info("[NEWS] CACHE preenchido enquanto aguardava")
             return hit_response(response, key, cached)
 
         try:
-            logger.info(
-                "[NEWS] Fazendo scrape inicial: source=%s limit=%s", source_key, limit
-            )
             result = await scrape_news(
                 scraper, limit, data_dir=source_key, useProxy=proxy
             )
-
-        except Exception as exc:  # CancelledError passa direto
+        except Exception as exc:
             blocked = is_block_error(exc)
-
-            if isinstance(exc, ScraperError):
-                logger.warning(
-                    "[NEWS] Scrape inicial falhou: source=%s erro=%s", source_key, exc
-                )
-            else:
-                logger.exception("[NEWS] Erro inesperado: source=%s", source_key)
-
             if blocked:
                 await browser_manager.close_context(key)
                 blocked_until[key] = now() + settings.blocked_cooldown_seconds
@@ -491,32 +368,12 @@ async def news(
             if cached is not None:
                 return stale_response(response, key, cached)
 
-            if blocked:
-                raise HTTPException(
-                    status_code=503,
-                    detail="A fonte recusou temporariamente a consulta. Tente novamente em até 1 minuto.",
-                    headers={"Retry-After": "60"},
-                ) from exc
-
             status = 502 if isinstance(exc, ScraperError) else 503
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
         store_result(key, result)
-
-        logger.info(
-            "[NEWS] Cache atualizado: source=%s limit=%s items=%s",
-            source_key,
-            limit,
-            result.count,
-        )
-
         set_cache_headers(response, "MISS", 0)
         return result
-
-
-# ============================================================
-# FUNDAMENTUS
-# ============================================================
 
 
 @app.get("/tickers")
@@ -525,58 +382,34 @@ async def searchTicket(
     ticker: str = Query("PETR4", min_length=1),
 ):
     scraper = get_scraper(source)
-
-    search = require_method(scraper, "search")
-    # search = require_method(scraper, "searchFundamentusHttpx")
-
+    search_func = require_method(scraper, "search")
     try:
-        return await search(ticker.upper())
+        async with http_semaphore:
+            return await search_func(ticker.upper())
     except ScraperError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/tickers/historical")
 async def fundamentus_historical(
-    source: str = Query(
-        "fundamentus",
-        min_length=1,
-        max_length=30,
-        description="Fonte dos dados (fundamentus, yahoo, etc)",
-    ),
-    ticker: str = Query(
-        "PETR4", min_length=1, description="Código do ativo (ex: PETR4, VALE3)"
-    ),
-    range_: str = Query(
-        "1mo",
-        alias="range",
-        min_length=1,
-        max_length=10,
-        description="Período total dos dados (1mo, 6mo, 1y, etc)",
-    ),
-    interval: str = Query(
-        "1mo",
-        min_length=1,
-        max_length=10,
-        description="Intervalo entre os pontos (1d, 1wk, 1mo, etc)",
-    ),
-    order: str = Query(
-        "asc",
-        min_length=3,
-        max_length=4,
-        description="Ordem de classificação (asc ou desc)",
-    ),
+    source: str = Query("fundamentus", min_length=1, max_length=30),
+    ticker: str = Query("PETR4", min_length=1),
+    range_: str = Query("1mo", alias="range", min_length=1, max_length=10),
+    interval: str = Query("1mo", min_length=1, max_length=10),
+    order: str = Query("asc", min_length=3, max_length=4),
 ):
-    order = order.lower()
-    if order not in ("asc", "desc"):
+    order_clean = order.lower()
+    if order_clean not in ("asc", "desc"):
         raise HTTPException(
             status_code=400, detail="O parâmetro 'order' deve ser 'asc' ou 'desc'"
         )
 
     scraper = get_scraper(source)
-    historical = require_method(scraper, "historicalFundamentusHttpx")
+    historical_func = require_method(scraper, "historicalFundamentusHttpx")
 
     try:
-        return await historical(ticker.upper(), range_, order == "desc")
+        async with http_semaphore:
+            return await historical_func(ticker.upper(), range_, order_clean == "desc")
     except ScraperError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -589,21 +422,15 @@ async def fundamentals(
     ticker: str = Query("PETR4", min_length=1),
 ):
     if not url:
-        raise HTTPException(
-            status_code=503,
-            detail=("A url deve ser informado."),
-        )
+        raise HTTPException(status_code=400, detail="A url deve ser informada.")
+
     scraper = get_scraper(source)
-    fundamentals = require_method(scraper, "fundamentals")
+    fundamentals_func = require_method(scraper, "fundamentals")
     try:
-        return await fundamentals(url, kind, ticker)
+        async with http_semaphore:
+            return await fundamentals_func(url, kind, ticker)
     except ScraperError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-# ============================================================
-# SOURCES
-# ============================================================
 
 
 @app.get("/sources")

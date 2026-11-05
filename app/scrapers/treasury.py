@@ -2,13 +2,17 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import time
-import urllib.request
-from datetime import datetime, date, timezone
+from datetime import date, datetime, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
-import urllib.error
+
+import httpx
+
 from app.scrapers.base import TreasuryScraper as BaseTreasuryScraper
+
+logger = logging.getLogger("uvicorn.error")
 
 TZ_BR = ZoneInfo("America/Sao_Paulo")
 CHECK_INTERVAL = 3600
@@ -16,6 +20,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; nexus-scraper/1.0)"}
 
 
 def parse_num(s: str | None) -> float | None:
+    """Converte números formatados em string (com vírgula) para float."""
     s = (s or "").strip()
     if not s:
         return None
@@ -24,10 +29,19 @@ def parse_num(s: str | None) -> float | None:
 
 @lru_cache(maxsize=4096)
 def parse_date_br(s: str) -> date:
+    """Parseia datas no formato brasileiro DD/MM/YYYY com cache em memória."""
     return datetime.strptime(s.strip(), "%d/%m/%Y").date()
 
 
 class TreasuryScraper(BaseTreasuryScraper):
+    """Scraper dos títulos do Tesouro Direto via dados abertos da API do governo.
+
+    Responsabilidade:
+    - Consultar o catálogo de dados abertos para obter a URL do arquivo CSV atualizado.
+    - Baixar e processar o arquivo de taxas de títulos de forma 100% assíncrona (httpx.AsyncClient).
+    - Manter em memória um cache de curto prazo evitando requisições excessivas à infraestrutura pública.
+    """
+
     source_name = "treasury"
     dataset_id = "taxas-dos-titulos-ofertados-pelo-tesouro-direto"
     api_url = (
@@ -42,28 +56,26 @@ class TreasuryScraper(BaseTreasuryScraper):
     _etag: str | None = None
     _last_modified: str | None = None
 
-    def _get(self, url: str) -> bytes:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.read()
-
-    def get_csv_url(self) -> str:
-        data = json.loads(self._get(self.api_url).decode("utf-8"))
-        for res in data["result"]["resources"]:
-            if res.get("format", "").upper() == "CSV":
-                return res["url"]
-        raise RuntimeError("Recurso CSV não encontrado no dataset.")
-
-    def fetch_csv_text(self, url: str) -> str:
-        return self._get(url).decode("utf-8-sig")
+    async def get_csv_url(self) -> str:
+        """Consulta a API do portal de dados abertos e recupera o link direto do CSV."""
+        async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
+            resp = await client.get(self.api_url)
+            resp.raise_for_status()
+            data = resp.json()
+            for res in data["result"]["resources"]:
+                if res.get("format", "").upper() == "CSV":
+                    return res["url"]
+        raise RuntimeError("Recurso CSV não encontrado no dataset do Tesouro Direto.")
 
     @lru_cache(maxsize=2048)
     def to_symbol(self, bond_type: str, maturity: date) -> str:
+        """Gera o identificador normalizado do título (ex: tesouro-ipca-15082026)."""
         base = "-".join(bond_type.lower().replace("+", "").split())
         return f"{base}-{maturity.strftime('%d%m%Y')}"
 
     @lru_cache(maxsize=64)
     def to_indexer(self, bond_type: str) -> str:
+        """Mapeia o índice do título (selic, ipca, prefixado, igpm)."""
         bt = bond_type.lower()
         if "selic" in bt:
             return "selic"
@@ -76,9 +88,10 @@ class TreasuryScraper(BaseTreasuryScraper):
         return "desconhecido"
 
     def build_payload(self, csv_text: str, reference: date | None = None) -> dict:
+        """Processa as linhas do CSV e gera os dados estruturados de taxas e títulos."""
         ref = reference or datetime.now(TZ_BR).date()
         reader = csv.DictReader(io.StringIO(csv_text), delimiter=";")
-        by_symbol: dict[str, tuple[date, dict]] = {}
+        by_symbol: dict[str, tuple[date, dict, dict]] = {}
 
         for row in reader:
             bond_type = (row.get("Tipo Titulo") or "").strip()
@@ -86,7 +99,7 @@ class TreasuryScraper(BaseTreasuryScraper):
                 continue
 
             maturity = parse_date_br(row["Data Vencimento"])
-            if maturity < ref:  # descarta vencidos antes de qualquer outro parse
+            if maturity < ref:
                 continue
 
             base_date = parse_date_br(row["Data Base"])
@@ -125,10 +138,11 @@ class TreasuryScraper(BaseTreasuryScraper):
         index = {v[1]["symbol"]: {**v[1], **v[2]} for v in by_symbol.values()}
         return {"status": "ok", "results": results, "index": index}
 
-    def _fetch_if_changed(self) -> dict | None:
+    async def _fetch_if_changed(self) -> dict | None:
+        """Valida ETag e Last-Modified para evitar re-download do CSV quando inalterado."""
         cls = type(self)
         if not cls._csv_url:
-            cls._csv_url = self.get_csv_url()
+            cls._csv_url = await self.get_csv_url()
 
         headers = dict(HEADERS)
         if cls._cache:
@@ -137,45 +151,50 @@ class TreasuryScraper(BaseTreasuryScraper):
             if cls._last_modified:
                 headers["If-Modified-Since"] = cls._last_modified
 
-        req = urllib.request.Request(cls._csv_url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                cls._etag = r.headers.get("ETag")
-                cls._last_modified = r.headers.get("Last-Modified")
-                return self.build_payload(r.read().decode("utf-8-sig"))
-        except urllib.error.HTTPError as e:
-            if e.code == 304:  # não mudou
+        async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+            resp = await client.get(cls._csv_url)
+            if resp.status_code == 304:
                 return None
-            raise
+
+            resp.raise_for_status()
+            cls._etag = resp.headers.get("ETag")
+            cls._last_modified = resp.headers.get("Last-Modified")
+            return self.build_payload(resp.text)
 
     async def _get_payload(self) -> dict:
+        """Garante acesso thread-safe ao payload em cache ou renova o conteúdo."""
         cls = type(self)
         if cls._cache and time.monotonic() - cls._cache_ts < CHECK_INTERVAL:
             return cls._cache
+
         async with cls._lock:
             if cls._cache and time.monotonic() - cls._cache_ts < CHECK_INTERVAL:
                 return cls._cache
+
             try:
-                new = await asyncio.to_thread(self._fetch_if_changed)
-            except Exception:
-                if cls._cache:  # falhou a checagem: serve o cache antigo
+                new = await self._fetch_if_changed()
+                if new is not None:
+                    cls._cache = new
+            except Exception as e:
+                logger.warning("Falha ao atualizar Tesouro Direto: %s", e)
+                if cls._cache:
                     return cls._cache
                 raise
-            if new is not None:
-                cls._cache = new
+
             cls._cache_ts = time.monotonic()
             return cls._cache
 
     def filter_results(self, results: list[dict], q: str | None) -> list[dict]:
+        """Filtra itens pela string de busca."""
         if not q or not q.strip():
             return results
         tokens = q.lower().split()
         return [r for r in results if all(t in r["_haystack"] for t in tokens)]
 
     async def search(self, q: str | None):
+        """Método público de busca de títulos por termo ou código."""
         payload = await self._get_payload()
         results = self.filter_results(payload["results"], q)
-        # remove o campo interno antes de devolver
         return {
             "status": "ok",
             "results": [
@@ -187,13 +206,13 @@ class TreasuryScraper(BaseTreasuryScraper):
         return "semiannual" if "juros semestrais" in bond_type.lower() else "zero"
 
     async def indicators(self, symbols: list[str]) -> dict:
+        """Retorna taxas e preços de uma lista específica de títulos."""
         payload = await self._get_payload()
         index = payload["index"]
 
-        # normaliza e remove duplicados mantendo a ordem
         wanted = list(dict.fromkeys(s.strip().lower() for s in symbols if s.strip()))
-
         results, not_found = [], []
+
         for sym in wanted:
             item = index.get(sym)
             if item:

@@ -12,7 +12,7 @@ SCRAPERS = {
     "fundamentus": FundamentusHeadlinesScraper(),
     "broadcast": BroadcastHeadlinesScraper(),
     "investidor10": Investidor10Scraper(),
-    "tesouro": TreasuryScraper()
+    "tesouro": TreasuryScraper(),
 }
 
 __all__ = ["NewsScraper", "SCRAPERS"]
