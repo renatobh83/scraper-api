@@ -104,8 +104,8 @@ class InvestingHeadlinesScraper(NewsScraper):
 
         return not await self._desafio_ativo(page)
 
-    async def clicar_turnstile(self, page, timeout=30) -> bool:
-        """Localiza o iframe do Turnstile e efetua o movimento humano até o checkbox."""
+    async def clicar_turnstile(self, page, timeout=30):
+        """Procura o iframe do Turnstile e clica no checkbox liberando o Event Loop."""
         for _ in range(timeout * 2):
             for frame in page.frames:
                 if "challenges.cloudflare.com" in frame.url:
@@ -119,9 +119,11 @@ class InvestingHeadlinesScraper(NewsScraper):
                         x = box["x"] + 30 + random.uniform(-3, 3)
                         y = box["y"] + box["height"] / 2 + random.uniform(-3, 3)
 
-                        await page.mouse.move(x - 120, y - 40, steps=15)
-                        await page.mouse.move(x, y, steps=20)
-                        await asyncio.sleep(random.uniform(0.2, 0.5))
+                        # Move em menos passos para não travar a CPU
+                        await page.mouse.move(x - 120, y - 40, steps=5)
+                        await asyncio.sleep(0.05)  # Libera o event loop do FastAPI
+                        await page.mouse.move(x, y, steps=5)
+                        await asyncio.sleep(0.05)  # Libera o event loop do FastAPI
                         await page.mouse.click(x, y)
                         return True
             await asyncio.sleep(0.5)
