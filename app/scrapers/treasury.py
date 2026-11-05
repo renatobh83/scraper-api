@@ -59,6 +59,7 @@ class TreasuryScraper(BaseTreasuryScraper):
     async def get_csv_url(self) -> str:
         """Consulta a API do portal de dados abertos e recupera o link direto do CSV."""
         async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
+            logger.info("Inicio de scrapy in", self.api_url)
             resp = await client.get(self.api_url)
             resp.raise_for_status()
             data = resp.json()
