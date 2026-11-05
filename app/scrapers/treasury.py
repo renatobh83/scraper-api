@@ -57,15 +57,25 @@ class TreasuryScraper(BaseTreasuryScraper):
     _last_modified: str | None = None
 
     async def get_csv_url(self) -> str:
-        """Consulta a API do portal de dados abertos e recupera o link direto do CSV."""
-        async with httpx.AsyncClient(headers=HEADERS, timeout=30.0) as client:
-            logger.info("Inicio de scrapy in", self.api_url)
-            resp = await client.get(self.api_url)
-            resp.raise_for_status()
-            data = resp.json()
-            for res in data["result"]["resources"]:
-                if res.get("format", "").upper() == "CSV":
-                    return res["url"]
+        """Consulta a API do portal de dados abertos para obter a URL do CSV."""
+        logger.info("Inicio de scrapy em %s", self.api_url)  # Fix do log
+
+        async with httpx.AsyncClient(
+            headers=HEADERS,
+            timeout=30.0,
+            follow_redirects=True,  # Permite seguir redirecionamentos HTTP
+        ) as client:
+            try:
+                resp = await client.get(self.api_url)
+                resp.raise_for_status()
+                data = resp.json()
+                for res in data["result"]["resources"]:
+                    if res.get("format", "").upper() == "CSV":
+                        return res["url"]
+            except (httpx.HTTPError, httpx.RequestError) as e:
+                logger.error("Erro de conexão com API do Tesouro: %s", e)
+                raise
+
         raise RuntimeError("Recurso CSV não encontrado no dataset do Tesouro Direto.")
 
     @lru_cache(maxsize=2048)
@@ -178,9 +188,13 @@ class TreasuryScraper(BaseTreasuryScraper):
                     cls._cache = new
             except Exception as e:
                 logger.warning("Falha ao atualizar Tesouro Direto: %s", e)
+                # Se já existir cache antigo, serve o antigo em caso de queda do governo
                 if cls._cache:
                     return cls._cache
-                raise
+                # Se não houver cache nenhum, lança ScraperError para o main tratar com 502/503
+                raise ScraperError(
+                    f"Serviço do Tesouro Direto indisponível no momento: {e}"
+                ) from e
 
             cls._cache_ts = time.monotonic()
             return cls._cache
