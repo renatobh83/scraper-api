@@ -8,7 +8,7 @@ from app.scrapers.treasury import TreasuryScraper
 
 # SCRAPERS: dict[str, NewsScraper] = {
 SCRAPERS = {
-    "investing": InvestingHeadlinesScraper(),
+    # "investing": InvestingHeadlinesScraper(),
     "fundamentus": FundamentusHeadlinesScraper(),
     "broadcast": BroadcastHeadlinesScraper(),
     "investidor10": Investidor10Scraper(),
