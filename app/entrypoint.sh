@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-RESTART_INTERVAL="${RESTART_INTERVAL:-3600}"   # padrão 1h
+RESTART_INTERVAL="${RESTART_INTERVAL:-43200}"   # padrão 1h
 GRACE_SECONDS="${GRACE_SECONDS:-15}"           # tempo pro uvicorn fechar limpo
 
 echo "[entrypoint] iniciando loop (restart a cada ${RESTART_INTERVAL}s)"
