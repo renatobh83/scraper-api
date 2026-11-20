@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
-RESTART_INTERVAL="${RESTART_INTERVAL:-43200}"   # padrão 1h
-GRACE_SECONDS="${GRACE_SECONDS:-15}"           # tempo pro uvicorn fechar limpo
+RESTART_INTERVAL="${RESTART_INTERVAL:-3600}"
+GRACE_SECONDS="${GRACE_SECONDS:-15}"
+UVICORN_LIMIT_CONCURRENCY="${UVICORN_LIMIT_CONCURRENCY:-30}"
 
 echo "[entrypoint] iniciando loop (restart a cada ${RESTART_INTERVAL}s)"
 
@@ -11,22 +12,19 @@ while true; do
         --host 0.0.0.0 \
         --port 8000 \
         --workers 1 \
-        --limit-concurrency 2 \
+        --limit-concurrency "${UVICORN_LIMIT_CONCURRENCY}" \
         --no-access-log \
         --log-config ./app/log_config.yaml &
     UVICORN_PID=$!
 
-    # espera X segundos OU até o uvicorn morrer sozinho (o que vier primeiro)
-    # 'wait -n' do bash retorna assim que qualquer filho terminar
     (
         sleep "$RESTART_INTERVAL"
         kill -TERM "$UVICORN_PID" 2>/dev/null || true
     ) &
     KILLER_PID=$!
 
-    wait "$UVICORN_PID" || true       # espera o uvicorn sair
-
-    kill "$KILLER_PID" 2>/dev/null || true   # mata o timer se ainda estiver vivo
+    wait "$UVICORN_PID" || true
+    kill "$KILLER_PID" 2>/dev/null || true
     wait "$KILLER_PID" 2>/dev/null || true
 
     echo "[entrypoint] uvicorn encerrou, aguardando ${GRACE_SECONDS}s antes de reiniciar"

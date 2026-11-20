@@ -176,38 +176,51 @@ def build_result(scraper, items) -> NewsResponse:
 
 
 async def scrape_items(scraper, limit: int, *start_args, **start_kwargs):
-    """Executa a raspagem de navegador sob proteção de semáforo e timeout."""
+    """Executa a raspagem com limite de navegador, timeout e limpeza garantida."""
     async with browser_semaphore:
-        logger.info(
-            "[Scrape] Browser Semaphore adquirido (ativos: %s)",
-            settings.max_concurrent_scrapes - browser_semaphore._value,
-        )
+        active = settings.max_concurrent_scrapes - browser_semaphore._value
+        logger.info("[Scrape] Browser Semaphore adquirido (ativos: %s)", active)
+
         key = await browser_manager.start(**start_kwargs)
+        page = None
+
         try:
-            page = await browser_manager.new_page(key)
-        except Exception as exc:
-            logger.warning(
-                f"[Scrape] Contexto {key} inválido ao abrir página. Reiniciando contexto..."
-            )
-            await browser_manager.close_context(key)
-            key = await browser_manager.start(**start_kwargs)
-            page = await browser_manager.new_page(key)
-        try:
+            try:
+                page = await browser_manager.new_page(key)
+            except Exception as exc:
+                logger.warning(
+                    "[Scrape] Contexto %s inválido ao abrir página; recriando: %s",
+                    key,
+                    exc,
+                )
+                await browser_manager.close_context(key)
+                key = await browser_manager.start(**start_kwargs)
+                page = await browser_manager.new_page(key)
+
             return await asyncio.wait_for(
                 scraper.scrape(page, limit),
                 timeout=SCRAPE_TIMEOUT,
             )
+
         except asyncio.TimeoutError as exc:
-            if "page" in locals() and not page.is_closed():
-                await page.close()
             await browser_manager.close_context(key)
             raise ScraperError(
                 f"Scrape excedeu tempo limite de {SCRAPE_TIMEOUT}s"
             ) from exc
-        except ScraperError as exc:
-            if "page" in locals() and not page.is_closed():
-                await page.close()
-            raise exc
+
+        except asyncio.CancelledError:
+            logger.warning("[Scrape] Tarefa cancelada; liberando recursos")
+            raise
+
+        finally:
+            # Scrapers podem fechar a página por conta própria; is_closed evita
+            # uma segunda tentativa. Também cobre exceções inesperadas.
+            if page is not None:
+                try:
+                    if not page.is_closed():
+                        await page.close()
+                except Exception:
+                    logger.exception("[Scrape] Falha ao fechar página")
 
 
 async def scrape_news(scraper, limit: int, data_dir, useProxy) -> NewsResponse:
